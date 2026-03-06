@@ -1,0 +1,149 @@
+# Reusable Vercel deploy workflow
+# Builds and deploys a Next.js/frontend project to Vercel.
+#
+# Prerequisites (configure once per repo in Settings > Secrets):
+#   VERCEL_TOKEN      - Vercel personal access token
+#   VERCEL_ORG_ID     - Vercel team/org ID
+#   VERCEL_PROJECT_ID - Vercel project ID (from .vercel/project.json or Vercel dashboard)
+#
+# Usage:
+#   jobs:
+#     deploy:
+#       uses: Gray-Ghost-Data-Consultants-LLC/.github/.github/workflows/reusable-deploy-vercel.yml@main
+#       with:
+#         turbo-filter: '@grayghostdata/portal'
+#         production-url: 'https://grayghostdata.com'
+#       secrets: inherit
+
+name: Reusable Deploy — Vercel
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: "Node.js version"
+        type: string
+        default: "20"
+      turbo-filter:
+        description: "Turborepo filter for build (e.g. '@grayghostdata/portal'). Omit for plain npm run build."
+        type: string
+        default: ""
+      production:
+        description: "Deploy to production (--prod flag). Set false for preview deployments."
+        type: boolean
+        default: true
+      production-url:
+        description: "Production URL for smoke tests (e.g. https://grayghostdata.com)"
+        type: string
+        default: ""
+      smoke-test-paths:
+        description: "Newline-separated paths to smoke test after deploy (e.g. /api/health)"
+        type: string
+        default: "/api/health"
+      smoke-test-wait-seconds:
+        description: "Seconds to wait after deploy before running smoke tests"
+        type: number
+        default: 45
+      environment:
+        description: "GitHub environment name (for protection rules)"
+        type: string
+        default: "production"
+      working-directory:
+        description: "Working directory for the project"
+        type: string
+        default: "."
+    secrets:
+      VERCEL_TOKEN:
+        required: true
+      VERCEL_ORG_ID:
+        required: true
+      VERCEL_PROJECT_ID:
+        required: true
+      CLERK_PUBLISHABLE_KEY:
+        required: false
+      NPM_TOKEN:
+        required: false
+      SENTRY_AUTH_TOKEN:
+        required: false
+      SENTRY_ORG:
+        required: false
+      SENTRY_PROJECT:
+        required: false
+
+jobs:
+  deploy:
+    name: Deploy to Vercel${{ inputs.production && ' (production)' || ' (preview)' }}
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.environment }}
+      url: ${{ inputs.production-url }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Build
+        run: |
+          FILTER="${{ inputs.turbo-filter }}"
+          if [ -n "$FILTER" ]; then
+            npx turbo run build --filter="$FILTER"
+          else
+            npm run build
+          fi
+        working-directory: ${{ inputs.working-directory }}
+        env:
+          CI: "true"
+          NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY: ${{ secrets.CLERK_PUBLISHABLE_KEY }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+
+      - name: Deploy to Vercel
+        uses: amondnet/vercel-action@v25
+        with:
+          vercel-token: ${{ secrets.VERCEL_TOKEN }}
+          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+          vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
+          vercel-args: ${{ inputs.production && '--prod' || '' }}
+          working-directory: ${{ inputs.working-directory }}
+
+      - name: Smoke tests
+        if: ${{ inputs.production && inputs.production-url != '' }}
+        continue-on-error: true
+        run: |
+          echo "Waiting ${{ inputs.smoke-test-wait-seconds }}s for deployment propagation..."
+          sleep ${{ inputs.smoke-test-wait-seconds }}
+          BASE_URL="${{ inputs.production-url }}"
+          while IFS= read -r path; do
+            [ -z "$path" ] && continue
+            echo "Testing ${BASE_URL}${path}..."
+            curl -f --retry 5 --retry-delay 10 --retry-connrefused --max-time 30 \
+                 "${BASE_URL}${path}"
+          done <<'EOF'
+          ${{ inputs.smoke-test-paths }}
+          EOF
+          echo "All smoke tests passed"
+
+      - name: Create Sentry release
+        if: ${{ inputs.production && env.SENTRY_AUTH_TOKEN != '' }}
+        uses: getsentry/action-release@v1
+        env:
+          SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
+          SENTRY_ORG: ${{ secrets.SENTRY_ORG }}
+          SENTRY_PROJECT: ${{ secrets.SENTRY_PROJECT }}
+        with:
+          environment: ${{ inputs.environment }}
+          version: ${{ github.sha }}
+        continue-on-error: true

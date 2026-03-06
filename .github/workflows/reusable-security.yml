@@ -1,0 +1,203 @@
+# Reusable Security Scan workflow
+# Usage:
+#   jobs:
+#     security:
+#       uses: Gray-Ghost-Data-Consultants-LLC/.github/.github/workflows/reusable-security.yml@main
+#       with:
+#         node-version: '20'
+#       secrets: inherit
+
+name: Reusable Security Scan
+
+on:
+  workflow_call:
+    inputs:
+      node-version:
+        description: "Node.js version to use"
+        type: string
+        default: "20"
+      run-dependency-audit:
+        description: "Run npm audit"
+        type: boolean
+        default: true
+      run-secret-scan:
+        description: "Run Gitleaks secret detection"
+        type: boolean
+        default: true
+      run-sbom:
+        description: "Generate SBOM (CycloneDX + SPDX)"
+        type: boolean
+        default: true
+      run-license-check:
+        description: "Run license compliance check"
+        type: boolean
+        default: true
+      audit-level:
+        description: "npm audit severity level (low|moderate|high|critical)"
+        type: string
+        default: "moderate"
+      allowed-licenses:
+        description: "Semicolon-separated list of allowed SPDX license identifiers"
+        type: string
+        default: "MIT;Apache-2.0;BSD-2-Clause;BSD-3-Clause;ISC;0BSD;Unlicense;CC0-1.0;CC-BY-3.0;CC-BY-4.0;Python-2.0;Zlib"
+    secrets:
+      GITLEAKS_LICENSE:
+        required: false
+      NPM_TOKEN:
+        required: false
+
+jobs:
+  dependency-audit:
+    name: Dependency Audit
+    if: ${{ inputs.run-dependency-audit }}
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Run npm audit
+        run: npm audit --omit=dev --audit-level=${{ inputs.audit-level }}
+        continue-on-error: true
+
+      - name: Generate audit report
+        if: always()
+        run: |
+          npm audit --json > npm-audit.json || true
+          echo "## NPM Audit Report" > audit-summary.md
+          npm audit || true
+        continue-on-error: true
+
+      - name: Upload audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: audit-report
+          path: |
+            npm-audit.json
+            audit-summary.md
+          if-no-files-found: ignore
+          retention-days: 30
+
+  secret-scan:
+    name: Secret Detection
+    if: ${{ inputs.run-secret-scan }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Run Gitleaks
+        if: ${{ env.GITLEAKS_LICENSE != '' }}
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+
+      - name: Gitleaks (skipped — no license)
+        if: ${{ env.GITLEAKS_LICENSE == '' }}
+        env:
+          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+        run: echo "::warning::Gitleaks skipped — GITLEAKS_LICENSE secret not configured."
+
+      - name: Upload Gitleaks report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitleaks-report
+          path: results.json
+          if-no-files-found: ignore
+          retention-days: 30
+
+  sbom:
+    name: Generate SBOM
+    if: ${{ inputs.run-sbom }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Generate SBOM (CycloneDX)
+        uses: anchore/sbom-action@v0
+        with:
+          format: cyclonedx-json
+          output-file: sbom.cyclonedx.json
+
+      - name: Generate SBOM (SPDX)
+        uses: anchore/sbom-action@v0
+        with:
+          format: spdx-json
+          output-file: sbom.spdx.json
+
+      - name: Upload SBOM
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-reports
+          path: |
+            sbom.cyclonedx.json
+            sbom.spdx.json
+          retention-days: 90
+
+  license-check:
+    name: License Compliance
+    if: ${{ inputs.run-license-check }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node-version }}
+          cache: "npm"
+
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Check licenses
+        run: |
+          npm install -g license-checker
+          license-checker \
+            --production \
+            --onlyAllow "${{ inputs.allowed-licenses }}" \
+            --json > licenses.json
+        continue-on-error: true
+
+      - name: Upload license report
+        uses: actions/upload-artifact@v4
+        with:
+          name: license-reports
+          path: licenses.json
+          if-no-files-found: ignore
+          retention-days: 90

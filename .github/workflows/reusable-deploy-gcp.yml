@@ -1,0 +1,172 @@
+# Reusable GCP Cloud Run deploy workflow
+# Deploys a single Docker-based service to GCP Cloud Run via Workload Identity Federation.
+#
+# Prerequisites (configure once per repo in Settings > Secrets):
+#   GCP_WORKLOAD_IDENTITY_PROVIDER  - projects/NUMBER/locations/global/workloadIdentityPools/POOL/providers/PROVIDER
+#   GCP_SERVICE_ACCOUNT             - deployer@PROJECT.iam.gserviceaccount.com
+#
+# Usage:
+#   jobs:
+#     deploy:
+#       uses: Gray-Ghost-Data-Consultants-LLC/.github/.github/workflows/reusable-deploy-gcp.yml@main
+#       with:
+#         service: api
+#         gcp-project-id: sylvan-flight-476922-m7
+#         gcp-region: us-central1
+#         dockerfile: services/api/Dockerfile
+#       secrets: inherit
+
+name: Reusable Deploy — GCP Cloud Run
+
+on:
+  workflow_call:
+    inputs:
+      service:
+        description: "Cloud Run service name (also used as image name)"
+        type: string
+        required: true
+      gcp-project-id:
+        description: "GCP project ID"
+        type: string
+        default: "sylvan-flight-476922-m7"
+      gcp-region:
+        description: "GCP region"
+        type: string
+        default: "us-central1"
+      dockerfile:
+        description: "Path to Dockerfile relative to repo root"
+        type: string
+        default: "Dockerfile"
+      docker-context:
+        description: "Docker build context (relative to repo root)"
+        type: string
+        default: "."
+      health-check-path:
+        description: "Path for post-deploy health check (e.g. /health)"
+        type: string
+        default: "/health"
+      health-check-retries:
+        description: "Number of health check attempts before failing"
+        type: number
+        default: 10
+      scan-severity:
+        description: "Trivy severity levels to fail on (CRITICAL,HIGH,...)"
+        type: string
+        default: "CRITICAL"
+      environment:
+        description: "GitHub environment name (for protection rules)"
+        type: string
+        default: "production"
+    secrets:
+      GCP_WORKLOAD_IDENTITY_PROVIDER:
+        required: true
+      GCP_SERVICE_ACCOUNT:
+        required: true
+
+jobs:
+  deploy:
+    name: Deploy ${{ inputs.service }} to Cloud Run
+    runs-on: ubuntu-latest
+    environment:
+      name: ${{ inputs.environment }}
+    permissions:
+      contents: read
+      id-token: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account: ${{ secrets.GCP_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Configure Docker for GCR
+        run: gcloud auth configure-docker --quiet
+
+      - name: Build and push image
+        env:
+          SERVICE: ${{ inputs.service }}
+          PROJECT: ${{ inputs.gcp-project-id }}
+          SHA: ${{ github.sha }}
+        run: |
+          BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          docker build \
+            --build-arg BUILD_COMMIT="${SHA}" \
+            --build-arg BUILD_TIME="${BUILD_TIME}" \
+            -t "gcr.io/${PROJECT}/${SERVICE}:${SHA}" \
+            -t "gcr.io/${PROJECT}/${SERVICE}:latest" \
+            -f "${{ inputs.dockerfile }}" \
+            "${{ inputs.docker-context }}"
+          docker push "gcr.io/${PROJECT}/${SERVICE}:${SHA}"
+          docker push "gcr.io/${PROJECT}/${SERVICE}:latest"
+
+      - name: Vulnerability scan (Trivy)
+        uses: aquasecurity/trivy-action@0.31.0
+        with:
+          image-ref: gcr.io/${{ inputs.gcp-project-id }}/${{ inputs.service }}:${{ github.sha }}
+          format: "table"
+          exit-code: "1"
+          severity: ${{ inputs.scan-severity }}
+          ignore-unfixed: true
+
+      - name: Deploy new revision (no traffic)
+        env:
+          SERVICE: ${{ inputs.service }}
+          PROJECT: ${{ inputs.gcp-project-id }}
+          REGION: ${{ inputs.gcp-region }}
+          SHA: ${{ github.sha }}
+        run: |
+          gcloud run deploy "${SERVICE}" \
+            --image "gcr.io/${PROJECT}/${SERVICE}:${SHA}" \
+            --region "${REGION}" \
+            --platform managed \
+            --no-traffic \
+            --quiet
+
+      - name: Health check new revision
+        env:
+          SERVICE: ${{ inputs.service }}
+          REGION: ${{ inputs.gcp-region }}
+          HEALTH_PATH: ${{ inputs.health-check-path }}
+          RETRIES: ${{ inputs.health-check-retries }}
+        run: |
+          REVISION_URL=$(gcloud run revisions list \
+            --service "${SERVICE}" \
+            --region "${REGION}" \
+            --sort-by "~metadata.creationTimestamp" \
+            --limit 1 \
+            --format 'value(status.url)')
+          echo "Health checking ${REVISION_URL}${HEALTH_PATH}"
+          for i in $(seq 1 "${RETRIES}"); do
+            if curl -sf "${REVISION_URL}${HEALTH_PATH}" > /dev/null 2>&1; then
+              echo "✅ Health check passed (attempt ${i}/${RETRIES})"
+              exit 0
+            fi
+            echo "Attempt ${i}/${RETRIES} failed — waiting 15s..."
+            sleep 15
+          done
+          echo "❌ Health check failed after ${RETRIES} attempts"
+          exit 1
+
+      - name: Promote revision to 100% traffic
+        env:
+          SERVICE: ${{ inputs.service }}
+          REGION: ${{ inputs.gcp-region }}
+        run: |
+          REVISION=$(gcloud run revisions list \
+            --service "${SERVICE}" \
+            --region "${REGION}" \
+            --sort-by "~metadata.creationTimestamp" \
+            --limit 1 \
+            --format 'value(metadata.name)')
+          gcloud run services update-traffic "${SERVICE}" \
+            --region "${REGION}" \
+            --to-revisions "${REVISION}=100" \
+            --quiet
+          echo "✅ Traffic routed to ${REVISION}"
