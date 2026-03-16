@@ -10,13 +10,14 @@
 #     deploy:
 #       uses: Gray-Ghost-Data-Consultants-LLC/.github/.github/workflows/reusable-deploy-gcp.yml@main
 #       with:
-#         service: api
+#         service: sp001-api
 #         gcp-project-id: sylvan-flight-476922-m7
-#         gcp-region: us-central1
-#         dockerfile: services/api/Dockerfile
+#         gcp-region: us-east1
+#         dockerfile: Dockerfile
+#         run-alembic-migration: true
 #       secrets: inherit
 
-name: Reusable Deploy — GCP Cloud Run
+name: Reusable Deploy - GCP Cloud Run
 
 on:
   workflow_call:
@@ -32,7 +33,7 @@ on:
       gcp-region:
         description: "GCP region"
         type: string
-        default: "us-central1"
+        default: "us-east1"
       dockerfile:
         description: "Path to Dockerfile relative to repo root"
         type: string
@@ -57,6 +58,46 @@ on:
         description: "GitHub environment name (for protection rules)"
         type: string
         default: "production"
+      run-alembic-migration:
+        description: "Run Alembic upgrade head before deploy"
+        type: boolean
+        default: false
+      alembic-image-cmd:
+        description: "Docker image command override for migration (e.g. alembic upgrade head)"
+        type: string
+        default: ""
+      canary-observe-minutes:
+        description: "Minutes to observe error rate before promoting canary"
+        type: number
+        default: 10
+      error-rate-threshold:
+        description: "Error rate percentage threshold (>= this triggers rollback)"
+        type: string
+        default: "1"
+      set-secrets:
+        description: "Cloud Run --set-secrets flag value"
+        type: string
+        default: ""
+      set-env-vars:
+        description: "Cloud Run --set-env-vars flag value"
+        type: string
+        default: "ENVIRONMENT=production"
+      memory:
+        description: "Cloud Run instance memory"
+        type: string
+        default: "512Mi"
+      cpu:
+        description: "Cloud Run instance CPU"
+        type: string
+        default: "1"
+      max-instances:
+        description: "Cloud Run max instances"
+        type: number
+        default: 5
+      port:
+        description: "Container port"
+        type: number
+        default: 8080
     secrets:
       GCP_WORKLOAD_IDENTITY_PROVIDER:
         required: true
@@ -65,10 +106,10 @@ on:
 
 jobs:
   deploy:
-    name: Deploy ${{ inputs.service }} to Cloud Run
+    name: Deploy to Cloud Run
     runs-on: ubuntu-latest
     environment:
-      name: ${{ inputs.environment }}
+      name: production
     permissions:
       contents: read
       id-token: write
@@ -86,87 +127,180 @@ jobs:
       - name: Set up Cloud SDK
         uses: google-github-actions/setup-gcloud@v2
 
-      - name: Configure Docker for GCR
-        run: gcloud auth configure-docker --quiet
+      - name: Configure Docker for Artifact Registry
+        env:
+          REGION: ${{ inputs.gcp-region }}
+        run: gcloud auth configure-docker "${REGION}-docker.pkg.dev" --quiet
 
       - name: Build and push image
-        env:
-          SERVICE: ${{ inputs.service }}
-          PROJECT: ${{ inputs.gcp-project-id }}
-          SHA: ${{ github.sha }}
-        run: |
-          BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-          docker build \
-            --build-arg BUILD_COMMIT="${SHA}" \
-            --build-arg BUILD_TIME="${BUILD_TIME}" \
-            -t "gcr.io/${PROJECT}/${SERVICE}:${SHA}" \
-            -t "gcr.io/${PROJECT}/${SERVICE}:latest" \
-            -f "${{ inputs.dockerfile }}" \
-            "${{ inputs.docker-context }}"
-          docker push "gcr.io/${PROJECT}/${SERVICE}:${SHA}"
-          docker push "gcr.io/${PROJECT}/${SERVICE}:latest"
-
-      - name: Vulnerability scan (Trivy)
-        uses: aquasecurity/trivy-action@0.31.0
-        with:
-          image-ref: gcr.io/${{ inputs.gcp-project-id }}/${{ inputs.service }}:${{ github.sha }}
-          format: "table"
-          exit-code: "1"
-          severity: ${{ inputs.scan-severity }}
-          ignore-unfixed: true
-
-      - name: Deploy new revision (no traffic)
         env:
           SERVICE: ${{ inputs.service }}
           PROJECT: ${{ inputs.gcp-project-id }}
           REGION: ${{ inputs.gcp-region }}
           SHA: ${{ github.sha }}
         run: |
+          REGISTRY="${REGION}-docker.pkg.dev/${PROJECT}/ggdc-docker"
+          BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+          docker build \
+            --build-arg BUILD_COMMIT="${SHA}" \
+            --build-arg BUILD_TIME="${BUILD_TIME}" \
+            -t "${REGISTRY}/${SERVICE}:${SHA}" \
+            -t "${REGISTRY}/${SERVICE}:latest" \
+            -f "${{ inputs.dockerfile }}" \
+            "${{ inputs.docker-context }}"
+          docker push "${REGISTRY}/${SERVICE}:${SHA}"
+          docker push "${REGISTRY}/${SERVICE}:latest"
+
+      - name: Vulnerability scan (Trivy)
+        uses: aquasecurity/trivy-action@0.31.0
+        with:
+          image-ref: ${{ inputs.gcp-region }}-docker.pkg.dev/${{ inputs.gcp-project-id }}/ggdc-docker/${{ inputs.service }}:${{ github.sha }}
+          format: "table"
+          exit-code: "1"
+          severity: ${{ inputs.scan-severity }}
+          ignore-unfixed: true
+
+      - name: Run database migration (Alembic)
+        if: ${{ inputs.run-alembic-migration }}
+        env:
+          SERVICE: ${{ inputs.service }}
+          REGION: ${{ inputs.gcp-region }}
+        run: |
+          gcloud run jobs execute "${SERVICE}-migrate" \
+            --region "${REGION}" \
+            --wait \
+            --quiet || echo "::warning::Migration job not found - ensure ${SERVICE}-migrate Cloud Run Job exists"
+
+      - name: Deploy canary revision (no traffic)
+        env:
+          SERVICE: ${{ inputs.service }}
+          PROJECT: ${{ inputs.gcp-project-id }}
+          REGION: ${{ inputs.gcp-region }}
+          SHA: ${{ github.sha }}
+          SET_SECRETS: ${{ inputs.set-secrets }}
+          SET_ENV_VARS: ${{ inputs.set-env-vars }}
+          MEMORY: ${{ inputs.memory }}
+          CPU: ${{ inputs.cpu }}
+          MAX_INSTANCES: ${{ inputs.max-instances }}
+          PORT: ${{ inputs.port }}
+        run: |
+          REGISTRY="${REGION}-docker.pkg.dev/${PROJECT}/ggdc-docker"
+          SECRET_FLAG=""
+          if [ -n "${SET_SECRETS}" ]; then
+            SECRET_FLAG="--set-secrets=${SET_SECRETS}"
+          fi
           gcloud run deploy "${SERVICE}" \
-            --image "gcr.io/${PROJECT}/${SERVICE}:${SHA}" \
+            --image "${REGISTRY}/${SERVICE}:${SHA}" \
             --region "${REGION}" \
             --platform managed \
+            --tag canary \
             --no-traffic \
+            --memory="${MEMORY}" \
+            --cpu="${CPU}" \
+            --max-instances="${MAX_INSTANCES}" \
+            --port="${PORT}" \
+            --execution-environment=gen2 \
+            --set-env-vars="${SET_ENV_VARS}" \
+            ${SECRET_FLAG} \
             --quiet
 
-      - name: Health check new revision
+      - name: Health check canary revision
         env:
           SERVICE: ${{ inputs.service }}
           REGION: ${{ inputs.gcp-region }}
           HEALTH_PATH: ${{ inputs.health-check-path }}
           RETRIES: ${{ inputs.health-check-retries }}
         run: |
-          REVISION_URL=$(gcloud run revisions list \
-            --service "${SERVICE}" \
+          CANARY_URL=$(gcloud run services describe "${SERVICE}" \
             --region "${REGION}" \
-            --sort-by "~metadata.creationTimestamp" \
-            --limit 1 \
-            --format 'value(status.url)')
-          echo "Health checking ${REVISION_URL}${HEALTH_PATH}"
+            --format 'value(status.traffic[tag=canary].url)' 2>/dev/null || echo "")
+          if [ -z "${CANARY_URL}" ]; then
+            CANARY_URL=$(gcloud run revisions list \
+              --service "${SERVICE}" \
+              --region "${REGION}" \
+              --sort-by "~metadata.creationTimestamp" \
+              --limit 1 \
+              --format 'value(status.url)' 2>/dev/null || echo "")
+          fi
+          if [ -z "${CANARY_URL}" ]; then
+            echo "::error::Could not retrieve canary URL for service ${SERVICE}"
+            exit 1
+          fi
+          echo "Health checking ${CANARY_URL}${HEALTH_PATH}"
           for i in $(seq 1 "${RETRIES}"); do
-            if curl -sf "${REVISION_URL}${HEALTH_PATH}" > /dev/null 2>&1; then
-              echo "✅ Health check passed (attempt ${i}/${RETRIES})"
+            if curl -sf --max-time 15 "${CANARY_URL}${HEALTH_PATH}" > /dev/null 2>&1; then
+              echo "Health check passed (attempt ${i}/${RETRIES})"
               exit 0
             fi
-            echo "Attempt ${i}/${RETRIES} failed — waiting 15s..."
+            echo "Attempt ${i}/${RETRIES} failed - waiting 15s..."
             sleep 15
           done
-          echo "❌ Health check failed after ${RETRIES} attempts"
+          echo "::error::Health check failed after ${RETRIES} attempts"
+          gcloud run services update-traffic "${SERVICE}" --region="${REGION}" --clear-tags --quiet || true
           exit 1
 
-      - name: Promote revision to 100% traffic
+      - name: Observe canary error rate
+        env:
+          SERVICE: ${{ inputs.service }}
+          REGION: ${{ inputs.gcp-region }}
+          PROJECT: ${{ inputs.gcp-project-id }}
+          OBSERVE_MINUTES: ${{ inputs.canary-observe-minutes }}
+          THRESHOLD: ${{ inputs.error-rate-threshold }}
+        run: |
+          echo "Observing canary error rate for ${OBSERVE_MINUTES} minutes (threshold: ${THRESHOLD}%)..."
+          END_TIME=$(($(date +%s) + OBSERVE_MINUTES * 60))
+          while [ $(date +%s) -lt $END_TIME ]; do
+            sleep 60
+            TWO_MIN_AGO=$(date -u -d '2 minutes ago' +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || \
+                          date -u -v-2M +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || \
+                          date -u +%Y-%m-%dT%H:%M:%SZ)
+            ERROR_COUNT=$(gcloud logging read \
+              "resource.type=cloud_run_revision AND resource.labels.service_name=${SERVICE} AND httpRequest.status>=500 AND timestamp>=\"${TWO_MIN_AGO}\"" \
+              --project="${PROJECT}" \
+              --limit=100 --format='value(insertId)' 2>/dev/null | wc -l || echo "0")
+            TOTAL_COUNT=$(gcloud logging read \
+              "resource.type=cloud_run_revision AND resource.labels.service_name=${SERVICE} AND timestamp>=\"${TWO_MIN_AGO}\"" \
+              --project="${PROJECT}" \
+              --limit=1000 --format='value(insertId)' 2>/dev/null | wc -l || echo "0")
+            if [ "${TOTAL_COUNT}" -gt 0 ]; then
+              RATE=$(echo "scale=2; ${ERROR_COUNT} * 100 / ${TOTAL_COUNT}" | bc)
+              echo "Error rate: ${RATE}% (${ERROR_COUNT}/${TOTAL_COUNT} in last 2 min)"
+              if [ "$(echo "${RATE} >= ${THRESHOLD}" | bc)" -eq 1 ]; then
+                echo "::error::Error rate ${RATE}% exceeds threshold ${THRESHOLD}%"
+                echo "Rolling back canary..."
+                gcloud run services update-traffic "${SERVICE}" --region="${REGION}" --clear-tags --quiet
+                exit 1
+              fi
+            else
+              echo "No traffic observed in last 2 minutes - continuing observation..."
+            fi
+          done
+          echo "Canary error rate acceptable for ${OBSERVE_MINUTES} minutes"
+
+      - name: Promote canary to 100% traffic
         env:
           SERVICE: ${{ inputs.service }}
           REGION: ${{ inputs.gcp-region }}
         run: |
-          REVISION=$(gcloud run revisions list \
-            --service "${SERVICE}" \
-            --region "${REGION}" \
-            --sort-by "~metadata.creationTimestamp" \
-            --limit 1 \
-            --format 'value(metadata.name)')
           gcloud run services update-traffic "${SERVICE}" \
             --region "${REGION}" \
-            --to-revisions "${REVISION}=100" \
+            --to-latest \
             --quiet
-          echo "✅ Traffic routed to ${REVISION}"
+          echo "Traffic promoted to latest revision"
+
+      - name: Deployment summary
+        if: always()
+        env:
+          SERVICE: ${{ inputs.service }}
+          REGION: ${{ inputs.gcp-region }}
+          SHA: ${{ github.sha }}
+          PROJECT: ${{ inputs.gcp-project-id }}
+        run: |
+          echo "## Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Field | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Service | ${SERVICE} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Region | ${REGION} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Image | ${SHA} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Registry | ${REGION}-docker.pkg.dev/${PROJECT}/ggdc-docker |" >> $GITHUB_STEP_SUMMARY
