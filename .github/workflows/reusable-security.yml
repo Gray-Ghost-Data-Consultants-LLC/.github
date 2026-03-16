@@ -5,6 +5,7 @@
 #       uses: Gray-Ghost-Data-Consultants-LLC/.github/.github/workflows/reusable-security.yml@main
 #       with:
 #         node-version: '20'
+#         run-pip-audit: true   # for Python projects
 #       secrets: inherit
 
 name: Reusable Security Scan
@@ -16,6 +17,10 @@ on:
         description: "Node.js version to use"
         type: string
         default: "20"
+      python-version:
+        description: "Python version for pip-audit (empty = skip Python audit)"
+        type: string
+        default: "3.12"
       run-dependency-audit:
         description: "Run npm audit"
         type: boolean
@@ -32,6 +37,14 @@ on:
         description: "Run license compliance check"
         type: boolean
         default: true
+      run-pip-audit:
+        description: "Run pip-audit for Python dependency vulnerabilities"
+        type: boolean
+        default: false
+      run-trivy-fs:
+        description: "Run Trivy filesystem scan (IaC, misconfigurations, secrets)"
+        type: boolean
+        default: false
       audit-level:
         description: "npm audit severity level (low|moderate|high|critical)"
         type: string
@@ -91,6 +104,29 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
+  pip-audit:
+    name: Python Dependency Audit
+    if: ${{ inputs.run-pip-audit }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Install pip-audit
+        run: pip install pip-audit
+
+      - name: Install project dependencies
+        run: |
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f pyproject.toml ]; then pip install -e ".[dev]" 2>/dev/null || pip install -e .; fi
+
+      - name: Run pip-audit
+        run: pip-audit
+
   secret-scan:
     name: Secret Detection
     if: ${{ inputs.run-secret-scan }}
@@ -103,17 +139,10 @@ jobs:
           fetch-depth: 0
 
       - name: Run Gitleaks
-        if: ${{ env.GITLEAKS_LICENSE != '' }}
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
-
-      - name: Gitleaks (skipped — no license)
-        if: ${{ env.GITLEAKS_LICENSE == '' }}
-        env:
-          GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
-        run: echo "::warning::Gitleaks skipped — GITLEAKS_LICENSE secret not configured."
 
       - name: Upload Gitleaks report
         if: always()
@@ -123,6 +152,32 @@ jobs:
           path: results.json
           if-no-files-found: ignore
           retention-days: 30
+
+  trivy-fs:
+    name: Trivy Filesystem Scan
+    if: ${{ inputs.run-trivy-fs }}
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run Trivy FS scan
+        uses: aquasecurity/trivy-action@0.31.0
+        with:
+          scan-type: "fs"
+          scan-ref: "."
+          format: "sarif"
+          output: "trivy-fs-results.sarif"
+          severity: "CRITICAL,HIGH"
+
+      - name: Upload Trivy results
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        continue-on-error: true
+        with:
+          sarif_file: "trivy-fs-results.sarif"
 
   sbom:
     name: Generate SBOM

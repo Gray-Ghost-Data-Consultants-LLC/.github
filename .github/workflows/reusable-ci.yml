@@ -7,6 +7,19 @@
 #         node-version: '20'
 #         turbo-filter: '@myorg/service'
 #       secrets: inherit
+#
+# For Python projects:
+#   jobs:
+#     ci:
+#       uses: Gray-Ghost-Data-Consultants-LLC/.github/.github/workflows/reusable-ci.yml@main
+#       with:
+#         run-lint: false
+#         run-typecheck: false
+#         run-build: false
+#         python-version: '3.12'
+#         run-python-lint: true
+#         run-python-test: true
+#       secrets: inherit
 
 name: Reusable CI
 
@@ -41,6 +54,22 @@ on:
         description: "Working directory (for non-monorepo projects)"
         type: string
         default: "."
+      python-version:
+        description: "Python version (empty = skip Python steps)"
+        type: string
+        default: ""
+      run-python-lint:
+        description: "Run Python lint with ruff"
+        type: boolean
+        default: false
+      run-python-test:
+        description: "Run Python tests with pytest"
+        type: boolean
+        default: false
+      python-test-services:
+        description: "Comma-separated services to start (e.g. postgres,redis)"
+        type: string
+        default: ""
     secrets:
       CLERK_PUBLISHABLE_KEY:
         required: false
@@ -110,7 +139,7 @@ jobs:
 
   build:
     name: Build
-    # Run even if lint/typecheck were skipped (skipped ≠ failed)
+    # Run even if lint/typecheck were skipped (skipped != failed)
     if: ${{ inputs.run-build && !failure() }}
     needs: [lint, type-check]
     runs-on: ubuntu-latest
@@ -172,3 +201,74 @@ jobs:
           else
             npm test -- --ci --coverage
           fi
+
+  python-lint:
+    name: Python Lint
+    if: ${{ inputs.run-python-lint }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Install dependencies
+        run: |
+          pip install ruff
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f pyproject.toml ]; then pip install -e ".[dev]" 2>/dev/null || pip install -e .; fi
+
+      - name: Ruff check
+        run: ruff check .
+
+      - name: Ruff format check
+        run: ruff format --check .
+
+  python-test:
+    name: Python Tests
+    if: ${{ inputs.run-python-test }}
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: testpass
+          POSTGRES_DB: test_db
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Install dependencies
+        run: |
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          if [ -f pyproject.toml ]; then pip install -e ".[dev]" 2>/dev/null || pip install -e .; fi
+
+      - name: Run tests
+        env:
+          DATABASE_URL: postgresql://postgres:testpass@localhost:5432/test_db
+          REDIS_URL: redis://localhost:6379
+          ENVIRONMENT: test
+        run: python -m pytest tests/ -v --tb=short
