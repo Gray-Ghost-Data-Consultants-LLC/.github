@@ -212,15 +212,23 @@ jobs:
           HEALTH_PATH: ${{ inputs.health-check-path }}
           RETRIES: ${{ inputs.health-check-retries }}
         run: |
+          # Try JSON extraction for canary tag URL (gcloud format filters don't support nested list filtering)
           CANARY_URL=$(gcloud run services describe "${SERVICE}" \
             --region "${REGION}" \
-            --format 'value(status.traffic[tag=canary].url)' 2>/dev/null || echo "")
+            --format json 2>/dev/null | jq -r '.status.traffic[]? | select(.tag=="canary") | .url // empty' 2>/dev/null || echo "")
+          # Fallback: latest revision URL
           if [ -z "${CANARY_URL}" ]; then
             CANARY_URL=$(gcloud run revisions list \
               --service "${SERVICE}" \
               --region "${REGION}" \
               --sort-by "~metadata.creationTimestamp" \
               --limit 1 \
+              --format 'value(status.url)' 2>/dev/null || echo "")
+          fi
+          # Final fallback: main service URL
+          if [ -z "${CANARY_URL}" ]; then
+            CANARY_URL=$(gcloud run services describe "${SERVICE}" \
+              --region "${REGION}" \
               --format 'value(status.url)' 2>/dev/null || echo "")
           fi
           if [ -z "${CANARY_URL}" ]; then
