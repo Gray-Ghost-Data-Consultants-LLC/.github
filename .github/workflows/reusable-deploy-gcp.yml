@@ -94,6 +94,18 @@ on:
         description: "Cloud Run max instances"
         type: number
         default: 5
+      min-instances:
+        description: "Cloud Run min instances (0 = scale to zero)"
+        type: number
+        default: 0
+      concurrency:
+        description: "Max concurrent requests per instance"
+        type: number
+        default: 80
+      timeout:
+        description: "Max request timeout (e.g. 300s, 10m)"
+        type: string
+        default: "300"
       port:
         description: "Container port"
         type: number
@@ -183,6 +195,9 @@ jobs:
           MEMORY: ${{ inputs.memory }}
           CPU: ${{ inputs.cpu }}
           MAX_INSTANCES: ${{ inputs.max-instances }}
+          MIN_INSTANCES: ${{ inputs.min-instances }}
+          CONCURRENCY: ${{ inputs.concurrency }}
+          TIMEOUT: ${{ inputs.timeout }}
           PORT: ${{ inputs.port }}
         run: |
           REGISTRY="${REGION}-docker.pkg.dev/${PROJECT}/ggdc-docker"
@@ -199,6 +214,9 @@ jobs:
             --memory="${MEMORY}" \
             --cpu="${CPU}" \
             --max-instances="${MAX_INSTANCES}" \
+            --min-instances="${MIN_INSTANCES}" \
+            --concurrency="${CONCURRENCY}" \
+            --timeout="${TIMEOUT}" \
             --port="${PORT}" \
             --execution-environment=gen2 \
             --set-env-vars="${SET_ENV_VARS}" \
