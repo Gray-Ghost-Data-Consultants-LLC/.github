@@ -165,7 +165,7 @@ jobs:
 
       - name: Vulnerability scan (Trivy)
         continue-on-error: true
-        uses: aquasecurity/trivy-action@0.31.0
+        uses: aquasecurity/trivy-action@v0.31.0
         with:
           image-ref: ${{ inputs.gcp-region }}-docker.pkg.dev/${{ inputs.gcp-project-id }}/ggdc-docker/${{ inputs.service }}:${{ github.sha }}
           format: "table"
