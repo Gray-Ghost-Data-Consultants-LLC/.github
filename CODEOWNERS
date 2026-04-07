@@ -1,0 +1,3 @@
+# Require review for all workflow changes
+.github/workflows/ @Gray-Ghost-Data-Consultants-LLC/platform-team
+.github/dependabot.yml @Gray-Ghost-Data-Consultants-LLC/platform-team
