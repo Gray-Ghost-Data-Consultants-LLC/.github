@@ -70,11 +70,44 @@ from `Gray-Ghost-Data-Consultants-LLC/.github`.
 | **grayghost-business-automation** | Config | N/A | **MISSING** | N/A | N/A |
 | **ggd-dashboard** | Mixed | N/A | **MISSING** | N/A | N/A |
 
-### Tier 4 — Archive / Low Priority (no templates)
+> **Note:** `social_Media_automations` may be archived — superseded by `Social-auto-workflows`.
+> See [REPO-LIFECYCLE.md](../REPO-LIFECYCLE.md).
 
-The following `grayghostdev` repos are candidates for archival or do not need workflow coverage:
-- Web scrapers (multiple), crypto projects, tutorial forks, placeholder repos
-- Consider archiving inactive repos to reduce attack surface
+### Tier 4 — Archive / Delete Candidates (no templates)
+
+The following repos are recommended for archival or deletion per the
+[Repository Lifecycle Assessment](../REPO-LIFECYCLE.md). **Do not create workflow
+templates for these repos.**
+
+| Repository | Action | Reason |
+|------------|--------|--------|
+| SamsScraper | Archive | Scraper consolidation |
+| SuperScraper2 | Archive | Scraper consolidation |
+| super_web_scraper | Archive | Scraper consolidation |
+| FinalScraper | Archive | Scraper consolidation |
+| web_scraper | Archive | Scraper consolidation |
+| superScraper_app | Archive | Scraper consolidation |
+| Scrapegraph-ai | Archive | Fork — scraper consolidation |
+| wholesale-crypto-app | Archive | Crypto consolidation |
+| Crypto-Applications-pacmandata | Archive | Crypto consolidation |
+| GrayGhost-Crypto-Application | Archive | Crypto consolidation |
+| MultiCurrencyWallet | Archive | Fork — crypto consolidation |
+| RWA_Loandisk_Chainlink | Archive | Crypto consolidation |
+| botpress | Archive | Unmodified fork |
+| grayghostsite | Archive | Superseded by grayghostdata-website |
+| ghostdata-application | Archive | Abandoned |
+| toolbox-production-final | Archive | Superseded by ToolboxAI-Dashboard |
+| robloxMVP_001 | Archive | Org version already archived |
+| DockerPHP | Archive | Abandoned learning repo |
+| smartContract | Archive | Abandoned |
+| WallArt | Archive | Abandoned — Swift prototype |
+| TrendingFaves | Archive | Abandoned — Swift prototype |
+| add-automated-tests-off-platform-project | Delete | Tutorial fork — zero original content |
+| try-github-CLI-off-platform-project | Delete | Tutorial fork — zero original content |
+| docs (Codecademy) | Delete | Tutorial fork — zero original content |
+| fuzzylogic-possibilityLogic | Delete | Tutorial fork — zero original content |
+| hello-world-docker-action | Delete | Tutorial repo — zero original content |
+| test-rust-app | Delete | Test repo — no business value |
 
 ---
 

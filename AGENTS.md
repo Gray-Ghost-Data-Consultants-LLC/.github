@@ -177,6 +177,21 @@ jobs:
 | grayghost-business-automation | Config | N/A | **N** | N/A | N/A | Template ready — security only |
 | ggd-dashboard | Mixed | N/A | **N** | N/A | N/A | Template ready — security only |
 
+### Lifecycle Flags
+
+> See [REPO-LIFECYCLE.md](REPO-LIFECYCLE.md) for the full repository assessment,
+> consolidation opportunities, and quarterly review policy.
+
+| Repository | Flag | Action |
+|------------|------|--------|
+| social_Media_automations | Stale | Archive — superseded by Social-auto-workflows |
+| Structured-Project001 | Under Review | Confirm purpose within 30 days |
+| toolbox-production-final | Stale | Archive — superseded by ToolboxAI-Dashboard |
+| robloxMVP_001 | Stale | Archive — org version already archived |
+
+**30+ additional grayghostdev repos** are recommended for archival or deletion.
+See REPO-LIFECYCLE.md for the complete list and phased action plan.
+
 ## Code Style and Conventions
 
 ### YAML Formatting
