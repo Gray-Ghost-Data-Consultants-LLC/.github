@@ -1,0 +1,21 @@
+# client-onboarding — CI workflow (TypeScript)
+# Copy to: client-onboarding/.github/workflows/ci.yml
+name: CI
+
+on:
+  push:
+    branches: [main, development]
+  pull_request:
+    branches: [main]
+  workflow_call:
+
+jobs:
+  ci:
+    uses: Gray-Ghost-Data-Consultants-LLC/.github/.github/workflows/reusable-ci.yml@main
+    with:
+      node-version: "20"
+      run-lint: true
+      run-typecheck: true
+      run-build: true
+      run-test: true
+    secrets: inherit

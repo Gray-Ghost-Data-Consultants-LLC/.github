@@ -1,0 +1,22 @@
+# client-onboarding — Security scan workflow
+# Copy to: client-onboarding/.github/workflows/security.yml
+name: Security Scan
+
+on:
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  security:
+    uses: Gray-Ghost-Data-Consultants-LLC/.github/.github/workflows/reusable-security.yml@main
+    with:
+      node-version: "20"
+      run-dependency-audit: true
+      run-secret-scan: true
+      run-sbom: true
+      run-license-check: true
+      run-trivy-fs: true
+    secrets: inherit

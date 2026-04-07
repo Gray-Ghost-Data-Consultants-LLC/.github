@@ -40,7 +40,27 @@ This is the **organization-level `.github` repository** for Gray Ghost Data Cons
     ├── DiningByUpscale/               # Missing: deploy-vercel.yml
     ├── ggdc-infrastructure/           # Missing: security.yml
     ├── business-goals/                # Missing: security.yml
-    └── after-the-storm/               # Missing: security.yml
+    ├── after-the-storm/               # Missing: security.yml
+    │   # Tier 1 — Client Projects (grayghostdev → org transfer)
+    ├── Midway_Cleaning_app/           # ci, security, deploy-gcp
+    ├── Luscious-Drops/                # ci, security, deploy-vercel
+    ├── client-roofing/                # ci (Python), security, deploy-gcp
+    ├── MouldenLaw/                    # ci, security, deploy-vercel
+    ├── client-onboarding/             # ci, security, deploy-gcp
+    │   # Tier 2 — Internal Tools (grayghostdev → org transfer)
+    ├── Ghost/                         # ci (Python), security, deploy-gcp
+    ├── DataClasses/                   # ci (Python), security
+    ├── webssh-service/                # ci (Python), security, deploy-gcp
+    ├── security-lab/                  # ci (Python), security
+    ├── ch001-cyber-forensics/         # ci (Python), security
+    ├── GrayGhostDataBusiness/         # ci, security, deploy-vercel
+    ├── ToolboxAI-Dashboard/           # ci, security, deploy-vercel
+    │   # Tier 3 — Utilities (grayghostdev)
+    ├── Snapps/                        # ci (JS), security
+    ├── social_Media_automations/      # security only
+    ├── n8n-custom/                    # security only
+    ├── grayghost-business-automation/ # security only
+    └── ggd-dashboard/                 # security only
 ```
 
 ## Reusable Workflow Reference
@@ -108,6 +128,12 @@ jobs:
 
 ## Org Repo Sync Status
 
+> **Cross-Org Note:** Repos under `grayghostdev` (Tiers 1-3) cannot call org reusable
+> workflows until transferred to `Gray-Ghost-Data-Consultants-LLC`. Templates are
+> pre-built and ready to activate after transfer.
+
+### Gray-Ghost-Data-Consultants-LLC (Org Repos)
+
 | Repository | Type | ci | security | deploy-gcp | deploy-vercel | Status |
 |------------|------|:--:|:--------:|:----------:|:-------------:|--------|
 | the-system | TypeScript | Y | **N** | **N** | N/A | Template ready |
@@ -118,6 +144,38 @@ jobs:
 | ggdc-infrastructure | Shell/IaC | N/A | **N** | N/A | N/A | Template ready |
 | business-goals | Docs | N/A | **N** | N/A | N/A | Template ready |
 | after-the-storm | New | N/A | **N** | N/A | N/A | Template ready |
+
+### Tier 1 — Client Projects (grayghostdev → org transfer)
+
+| Repository | Type | ci | security | deploy-gcp | deploy-vercel | Status |
+|------------|------|:--:|:--------:|:----------:|:-------------:|--------|
+| Midway_Cleaning_app | TypeScript | **N** | **N** | **N** | N/A | Template ready — transfer to org |
+| Luscious-Drops | TypeScript | **N** | **N** | N/A | **N** | Template ready — transfer to org |
+| client-roofing | Python | **N** | **N** | **N** | N/A | Template ready — transfer to org |
+| MouldenLaw | TypeScript | **N** | **N** | N/A | **N** | Template ready — transfer to org |
+| client-onboarding | TypeScript | **N** | **N** | **N** | N/A | Template ready — transfer to org |
+
+### Tier 2 — Internal Tools (grayghostdev → org transfer)
+
+| Repository | Type | ci | security | deploy-gcp | deploy-vercel | Status |
+|------------|------|:--:|:--------:|:----------:|:-------------:|--------|
+| Ghost | Python | **N** | **N** | **N** | N/A | Template ready — transfer to org |
+| DataClasses | Python | **N** | **N** | N/A | N/A | Template ready — transfer to org |
+| webssh-service | Python | **N** | **N** | **N** | N/A | Template ready — transfer to org |
+| security-lab | Python | **N** | **N** | N/A | N/A | Template ready — transfer to org |
+| ch001-cyber-forensics | Python | **N** | **N** | N/A | N/A | Template ready — transfer to org |
+| GrayGhostDataBusiness | TypeScript | **N** | **N** | N/A | **N** | Template ready — transfer to org |
+| ToolboxAI-Dashboard | TypeScript | **N** | **N** | N/A | **N** | Template ready — transfer to org |
+
+### Tier 3 — Utilities (grayghostdev, lower priority)
+
+| Repository | Type | ci | security | deploy-gcp | deploy-vercel | Status |
+|------------|------|:--:|:--------:|:----------:|:-------------:|--------|
+| Snapps | JavaScript | **N** | **N** | N/A | N/A | Template ready — transfer to org |
+| social_Media_automations | Python | N/A | **N** | N/A | N/A | Template ready — security only |
+| n8n-custom | Config | N/A | **N** | N/A | N/A | Template ready — security only |
+| grayghost-business-automation | Config | N/A | **N** | N/A | N/A | Template ready — security only |
+| ggd-dashboard | Mixed | N/A | **N** | N/A | N/A | Template ready — security only |
 
 ## Code Style and Conventions
 

@@ -1,0 +1,21 @@
+# Snapps — CI workflow (JavaScript)
+# Copy to: Snapps/.github/workflows/ci.yml
+name: CI
+
+on:
+  push:
+    branches: [main, development]
+  pull_request:
+    branches: [main]
+  workflow_call:
+
+jobs:
+  ci:
+    uses: Gray-Ghost-Data-Consultants-LLC/.github/.github/workflows/reusable-ci.yml@main
+    with:
+      node-version: "20"
+      run-lint: true
+      run-build: true
+      run-test: true
+      run-typecheck: false
+    secrets: inherit

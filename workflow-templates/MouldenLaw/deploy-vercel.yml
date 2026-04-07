@@ -1,0 +1,23 @@
+# MouldenLaw — Vercel deploy workflow
+# Copy to: MouldenLaw/.github/workflows/deploy-vercel.yml
+# NOTE: Requires VERCEL_TOKEN, VERCEL_ORG_ID, VERCEL_PROJECT_ID secrets
+name: Deploy to Vercel
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-vercel-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    uses: Gray-Ghost-Data-Consultants-LLC/.github/.github/workflows/reusable-deploy-vercel.yml@main
+    with:
+      node-version: "20"
+      production: true
+      production-url: ""              # TODO: set to production URL
+      smoke-test-paths: "/api/health"
+    secrets: inherit

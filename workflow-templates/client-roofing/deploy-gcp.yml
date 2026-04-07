@@ -1,0 +1,32 @@
+# client-roofing — GCP Cloud Run deploy workflow
+# Copy to: client-roofing/.github/workflows/deploy-gcp.yml
+# NOTE: Update 'service' name and 'set-secrets' to match your Cloud Run config
+name: Deploy to GCP
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    uses: ./.github/workflows/ci.yml
+    secrets: inherit
+
+  deploy:
+    needs: ci
+    uses: Gray-Ghost-Data-Consultants-LLC/.github/.github/workflows/reusable-deploy-gcp.yml@main
+    with:
+      service: client-roofing-api       # TODO: update to actual Cloud Run service name
+      memory: "512Mi"
+      cpu: "1"
+      max-instances: 5
+      canary-observe-minutes: 10
+      error-rate-threshold: "1"
+      # set-secrets: "SECRET_KEY=SECRET_KEY:latest"  # TODO: uncomment and configure
+      # set-env-vars: "ENVIRONMENT=production"
+    secrets: inherit

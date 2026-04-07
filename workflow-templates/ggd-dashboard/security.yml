@@ -1,0 +1,21 @@
+# ggd-dashboard — Security scan workflow (baseline)
+# Copy to: ggd-dashboard/.github/workflows/security.yml
+name: Security Scan
+
+on:
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+
+jobs:
+  security:
+    uses: Gray-Ghost-Data-Consultants-LLC/.github/.github/workflows/reusable-security.yml@main
+    with:
+      run-secret-scan: true
+      run-dependency-audit: false
+      run-sbom: false
+      run-license-check: false
+      run-trivy-fs: false
+    secrets: inherit

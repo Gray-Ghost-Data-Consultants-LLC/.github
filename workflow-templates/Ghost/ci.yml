@@ -1,0 +1,22 @@
+# Ghost — CI workflow (Python)
+# Copy to: Ghost/.github/workflows/ci.yml
+name: CI
+
+on:
+  push:
+    branches: [main, development]
+  pull_request:
+    branches: [main]
+  workflow_call:
+
+jobs:
+  ci:
+    uses: Gray-Ghost-Data-Consultants-LLC/.github/.github/workflows/reusable-ci.yml@main
+    with:
+      python-version: "3.12"
+      run-python-lint: true
+      run-python-test: true
+      run-lint: false
+      run-typecheck: false
+      run-build: false
+    secrets: inherit
