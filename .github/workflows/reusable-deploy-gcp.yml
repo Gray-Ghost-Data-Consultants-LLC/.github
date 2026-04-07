@@ -10,8 +10,8 @@
 #     deploy:
 #       uses: Gray-Ghost-Data-Consultants-LLC/.github/.github/workflows/reusable-deploy-gcp.yml@main
 #       with:
-#         service: sp001-api
-#         gcp-project-id: sylvan-flight-476922-m7
+#         service: my-api
+#         gcp-project-id: my-gcp-project-id
 #         gcp-region: us-east1
 #         dockerfile: Dockerfile
 #         run-alembic-migration: true
@@ -29,7 +29,7 @@ on:
       gcp-project-id:
         description: "GCP project ID"
         type: string
-        default: "sylvan-flight-476922-m7"
+        required: true
       gcp-region:
         description: "GCP region"
         type: string
