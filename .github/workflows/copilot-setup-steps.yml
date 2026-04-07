@@ -1,0 +1,42 @@
+# Copilot Coding Agent — Environment Setup
+# This workflow pre-installs tools that Copilot needs when working on this repo.
+# The job MUST be named "copilot-setup-steps" for Copilot to recognize it.
+#
+# Docs: https://docs.github.com/en/copilot/how-tos/use-copilot-agents/coding-agent/customize-the-agent-environment
+
+name: Copilot Setup Steps
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/copilot-setup-steps.yml"
+  pull_request:
+    paths:
+      - ".github/workflows/copilot-setup-steps.yml"
+
+jobs:
+  copilot-setup-steps:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install actionlint
+        run: |
+          ACTIONLINT_VERSION="1.7.7"
+          curl -sL "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz" \
+            | tar xz -C /usr/local/bin actionlint
+
+      - name: Install yamllint
+        run: pip install yamllint
+
+      - name: Verify tools
+        run: |
+          echo "=== actionlint ==="
+          actionlint --version
+          echo "=== yamllint ==="
+          yamllint --version
+          echo "=== Environment ready ==="
