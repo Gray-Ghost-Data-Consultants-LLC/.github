@@ -184,7 +184,7 @@ jobs:
             --wait \
             --quiet || echo "::warning::Migration job not found - ensure ${SERVICE}-migrate Cloud Run Job exists"
 
-      - name: Deploy canary revision (no traffic)
+      - name: Deploy canary revision (falls back to a full deploy on first-ever service creation)
         env:
           SERVICE: ${{ inputs.service }}
           PROJECT: ${{ inputs.gcp-project-id }}
@@ -205,12 +205,25 @@ jobs:
           if [ -n "${SET_SECRETS}" ]; then
             SECRET_FLAG="--set-secrets=${SET_SECRETS}"
           fi
+
+          # gcloud rejects --no-traffic when the service doesn't exist yet
+          # ("--no-traffic not supported when creating a new service"), so a
+          # brand-new service's first deploy has to go straight to 100%
+          # traffic instead of landing as an untagged canary. The health
+          # check / observe / promote steps below already tolerate a missing
+          # "canary" tag via their URL-lookup fallbacks, so no other step
+          # needs to change.
+          CANARY_FLAGS="--tag canary --no-traffic"
+          if ! gcloud run services describe "${SERVICE}" --region "${REGION}" --project "${PROJECT}" >/dev/null 2>&1; then
+            echo "Service ${SERVICE} does not exist yet in ${PROJECT} - deploying at 100% traffic instead of as a canary"
+            CANARY_FLAGS=""
+          fi
+
           gcloud run deploy "${SERVICE}" \
             --image "${REGISTRY}/${SERVICE}:${SHA}" \
             --region "${REGION}" \
             --platform managed \
-            --tag canary \
-            --no-traffic \
+            ${CANARY_FLAGS} \
             --memory="${MEMORY}" \
             --cpu="${CPU}" \
             --max-instances="${MAX_INSTANCES}" \
