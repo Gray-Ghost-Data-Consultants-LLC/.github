@@ -110,6 +110,10 @@ on:
         description: "Container port"
         type: number
         default: 8080
+      allow-unauthenticated:
+        description: "Make the service publicly reachable. Only takes effect on a service's first-ever deploy - gcloud does not touch invoker access on updates, so an existing service's access (set once, by hand or by an earlier first deploy) is left alone either way. Implemented via --no-invoker-iam-check rather than granting allUsers roles/run.invoker, since the latter is rejected outright on projects with a domain-restricted-sharing org policy (constraints/iam.allowedPolicyMemberDomains) - --no-invoker-iam-check works under that policy too."
+        type: boolean
+        default: false
     secrets:
       GCP_WORKLOAD_IDENTITY_PROVIDER:
         required: true
@@ -199,6 +203,7 @@ jobs:
           CONCURRENCY: ${{ inputs.concurrency }}
           TIMEOUT: ${{ inputs.timeout }}
           PORT: ${{ inputs.port }}
+          ALLOW_UNAUTH: ${{ inputs.allow-unauthenticated }}
         run: |
           REGISTRY="${REGION}-docker.pkg.dev/${PROJECT}/ggdc-docker"
           SECRET_FLAG=""
@@ -213,10 +218,12 @@ jobs:
           # check / observe / promote steps below already tolerate a missing
           # "canary" tag via their URL-lookup fallbacks, so no other step
           # needs to change.
+          FIRST_DEPLOY=false
           CANARY_FLAGS="--tag canary --no-traffic"
           if ! gcloud run services describe "${SERVICE}" --region "${REGION}" --project "${PROJECT}" >/dev/null 2>&1; then
             echo "Service ${SERVICE} does not exist yet in ${PROJECT} - deploying at 100% traffic instead of as a canary"
             CANARY_FLAGS=""
+            FIRST_DEPLOY=true
           fi
 
           gcloud run deploy "${SERVICE}" \
@@ -235,6 +242,19 @@ jobs:
             --set-env-vars="${SET_ENV_VARS}" \
             ${SECRET_FLAG} \
             --quiet
+
+          # A brand-new Cloud Run service is private by default (no invoker
+          # bindings at all), which 403s the health check below even once
+          # the container itself is healthy. Only relevant on first deploy -
+          # gcloud never touches invoker access on an update, so an existing
+          # service's access is left exactly as it already was.
+          if [ "${FIRST_DEPLOY}" = "true" ] && [ "${ALLOW_UNAUTH}" = "true" ]; then
+            echo "First deploy with allow-unauthenticated: true - disabling the invoker IAM check"
+            gcloud run services update "${SERVICE}" \
+              --region "${REGION}" \
+              --no-invoker-iam-check \
+              --quiet
+          fi
 
       - name: Health check canary revision
         env:
