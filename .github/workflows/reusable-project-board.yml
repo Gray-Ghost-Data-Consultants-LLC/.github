@@ -1,0 +1,268 @@
+# Reusable Project Board Automation Workflow
+# Synchronizes issues, pull requests, and status lifecycle across the
+# Gray-Ghost-Data-Consultants-LLC Organization Project Board.
+#
+# Usage in any repository (.github/workflows/project-sync.yml):
+#
+#   name: Sync to Project Board
+#   on:
+#     issues:
+#       types: [opened, labeled, assigned, closed, reopened]
+#     pull_request:
+#       types: [opened, labeled, ready_for_review, review_requested, closed, reopened]
+#
+#   jobs:
+#     sync-project:
+#       uses: Gray-Ghost-Data-Consultants-LLC/.github/.github/workflows/reusable-project-board.yml@main
+#       with:
+#         org-name: 'Gray-Ghost-Data-Consultants-LLC'
+#         project-number: 1
+#       secrets:
+#         PROJECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN || secrets.GITHUB_TOKEN }}
+
+name: Reusable Project Board Sync
+
+on:
+  workflow_call:
+    inputs:
+      org-name:
+        description: "GitHub organization name owning the Project (v2)"
+        type: string
+        default: "Gray-Ghost-Data-Consultants-LLC"
+      project-number:
+        description: "Organization Project (v2) number"
+        type: number
+        default: 1
+      auto-label:
+        description: "Automatically apply universal taxonomy labels if missing"
+        type: boolean
+        default: true
+    secrets:
+      PROJECT_TOKEN:
+        description: "Personal Access Token or GitHub App token with project:write permissions"
+        required: false
+
+permissions:
+  issues: write
+  pull-requests: write
+  contents: read
+  repository-projects: write
+
+jobs:
+  sync-to-project:
+    name: Sync Issue / PR to Org Project
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Auto-Label Universal Taxonomy
+        if: ${{ inputs.auto-label }}
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const isIssue = Boolean(context.payload.issue);
+            const isPR = Boolean(context.payload.pull_request);
+            const target = isIssue ? context.payload.issue : context.payload.pull_request;
+            if (!target) return;
+
+            const existingLabels = (target.labels || []).map(l => (typeof l === 'string' ? l : l.name));
+            const labelsToAdd = new Set();
+
+            const title = (target.title || '').toLowerCase();
+            const body = (target.body || '').toLowerCase();
+            const text = `${title} ${body}`;
+
+            // Priority Auto-detection
+            if (!existingLabels.some(l => l.startsWith('priority:'))) {
+              if (text.includes('critical') || text.includes('fatal') || text.includes('outage') || text.includes('security breach')) {
+                labelsToAdd.add('priority:critical');
+              } else if (text.includes('urgent') || text.includes('blocker') || text.includes('high priority')) {
+                labelsToAdd.add('priority:high');
+              } else if (text.includes('minor') || text.includes('cosmetic') || text.includes('nice to have')) {
+                labelsToAdd.add('priority:low');
+              } else {
+                labelsToAdd.add('priority:medium');
+              }
+            }
+
+            // Type Auto-detection
+            if (!existingLabels.some(l => l.startsWith('type:'))) {
+              if (text.includes('bug') || text.includes('fix') || text.includes('error') || text.includes('broken')) {
+                labelsToAdd.add('type:bug');
+              } else if (text.includes('feature') || text.includes('enhancement') || text.includes('add')) {
+                labelsToAdd.add('type:feature');
+              } else if (text.includes('doc') || text.includes('readme') || text.includes('guide')) {
+                labelsToAdd.add('type:docs');
+              } else if (text.includes('security') || text.includes('vulnerability') || text.includes('cve')) {
+                labelsToAdd.add('type:security');
+              } else if (text.includes('refactor') || text.includes('cleanup')) {
+                labelsToAdd.add('type:refactor');
+              } else if (text.includes('test') || text.includes('coverage') || text.includes('spec')) {
+                labelsToAdd.add('type:test');
+              } else if (text.includes('perf') || text.includes('speed') || text.includes('latency')) {
+                labelsToAdd.add('type:performance');
+              } else {
+                labelsToAdd.add('type:chore');
+              }
+            }
+
+            // Status Auto-detection for opened events
+            if (context.payload.action === 'opened') {
+              if (!existingLabels.some(l => l.startsWith('status:'))) {
+                if (isPR) {
+                  labelsToAdd.add('status:review-needed');
+                } else {
+                  labelsToAdd.add('status:needs-triage');
+                }
+              }
+            } else if (context.payload.action === 'closed') {
+              labelsToAdd.add('status:done');
+            } else if (context.payload.action === 'reopened') {
+              labelsToAdd.add('status:in-progress');
+            }
+
+            if (labelsToAdd.size > 0) {
+              const num = target.number;
+              await github.rest.issues.addLabels({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: num,
+                labels: Array.from(labelsToAdd)
+              });
+              console.log(`✓ Added standard taxonomy labels to #${num}:`, Array.from(labelsToAdd));
+            }
+
+      - name: Add / Update Organization Project Board (GraphQL v2)
+        uses: actions/github-script@v7
+        env:
+          PROJECT_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+          ORG_NAME: ${{ inputs.org-name }}
+          PROJECT_NUM: ${{ inputs.project-number }}
+        with:
+          script: |
+            const token = process.env.PROJECT_TOKEN;
+            const orgName = process.env.ORG_NAME;
+            const projectNumber = parseInt(process.env.PROJECT_NUM, 10);
+
+            const isIssue = Boolean(context.payload.issue);
+            const isPR = Boolean(context.payload.pull_request);
+            const target = isIssue ? context.payload.issue : context.payload.pull_request;
+            if (!target) return;
+
+            const targetNodeId = target.node_id;
+            console.log(`Target: ${isIssue ? 'Issue' : 'PR'} #${target.number} (Node ID: ${targetNodeId})`);
+
+            // Initialize GraphQL client with auth token if available, fallback to context octokit
+            const { Octokit } = require('@octokit/core');
+            const octokit = token ? new Octokit({ auth: token }) : github;
+
+            try {
+              // 1. Fetch Org Project v2 ID
+              const projectQuery = `
+                query getOrgProject($org: String!, $number: Int!) {
+                  organization(login: $org) {
+                    projectV2(number: $number) {
+                      id
+                      title
+                      fields(first: 20) {
+                        nodes {
+                          ... on ProjectV2SingleSelectField {
+                            id
+                            name
+                            options {
+                              id
+                              name
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              `;
+
+              const projectRes = await octokit.graphql(projectQuery, {
+                org: orgName,
+                number: projectNumber
+              });
+
+              const project = projectRes.organization && projectRes.organization.projectV2;
+              if (!project) {
+                console.log(`ℹ Project #${projectNumber} not found in org ${orgName}.`);
+                return;
+              }
+
+              console.log(`✓ Located Project: "${project.title}" (ID: ${project.id})`);
+
+              // 2. Add Item to Project v2
+              const addItemMutation = `
+                mutation addItem($projectId: ID!, $contentId: ID!) {
+                  addProjectV2ItemById(input: { projectId: $projectId, contentId: $contentId }) {
+                    item {
+                      id
+                    }
+                  }
+                }
+              `;
+
+              const addRes = await octokit.graphql(addItemMutation, {
+                projectId: project.id,
+                contentId: targetNodeId
+              });
+
+              const itemId = addRes.addProjectV2ItemById.item.id;
+              console.log(`✓ Item added/synced to project board (Item ID: ${itemId})`);
+
+              // 3. Status Field Mapping
+              const statusField = project.fields.nodes.find(f => f.name && f.name.toLowerCase() === 'status');
+              if (statusField && statusField.options) {
+                let targetStatus = 'In Progress';
+                const action = context.payload.action;
+
+                if (action === 'closed') {
+                  targetStatus = 'Done';
+                } else if (action === 'reopened') {
+                  targetStatus = 'In Progress';
+                } else if (isPR && (action === 'opened' || action === 'ready_for_review' || action === 'review_requested')) {
+                  targetStatus = 'Review Needed';
+                } else {
+                  const labels = (target.labels || []).map(l => (typeof l === 'string' ? l : l.name));
+                  if (labels.includes('status:blocked')) targetStatus = 'Blocked';
+                  else if (labels.includes('status:review-needed')) targetStatus = 'Review Needed';
+                  else if (labels.includes('status:in-progress')) targetStatus = 'In Progress';
+                  else if (labels.includes('status:needs-triage')) targetStatus = 'Needs Triage';
+                  else if (labels.includes('status:done')) targetStatus = 'Done';
+                }
+
+                const matchedOption = statusField.options.find(
+                  o => o.name.toLowerCase() === targetStatus.toLowerCase()
+                );
+
+                if (matchedOption) {
+                  const updateFieldMutation = `
+                    mutation updateFieldValue($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                      updateProjectV2ItemFieldValue(input: {
+                        projectId: $projectId,
+                        itemId: $itemId,
+                        fieldId: $fieldId,
+                        value: { singleSelectOptionId: $optionId }
+                      }) {
+                        projectV2Item {
+                          id
+                        }
+                      }
+                    }
+                  `;
+
+                  await octokit.graphql(updateFieldMutation, {
+                    projectId: project.id,
+                    itemId: itemId,
+                    fieldId: statusField.id,
+                    optionId: matchedOption.id
+                  });
+
+                  console.log(`✓ Project Board Status set to "${matchedOption.name}"`);
+                }
+              }
+            } catch (err) {
+              console.log(`ℹ Project board GraphQL operation notice: ${err.message}`);
+            }
