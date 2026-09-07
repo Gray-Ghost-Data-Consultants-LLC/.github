@@ -134,12 +134,17 @@ jobs:
       - name: Add / Update Organization Project Board (GraphQL v2)
         uses: actions/github-script@v7
         env:
-          PROJECT_TOKEN: ${{ secrets.PROJECT_TOKEN }}
           ORG_NAME: ${{ inputs.org-name }}
           PROJECT_NUM: ${{ inputs.project-number }}
         with:
+          # The org Projects v2 API needs a PAT/App token with project scope;
+          # GITHUB_TOKEN cannot see org projects. Hand it to github-script so
+          # the injected `github` client carries it — do NOT build a second
+          # client in the script: github-script already injects a variable
+          # named `octokit`, and `const octokit = …` threw
+          # "Identifier 'octokit' has already been declared" on every run.
+          github-token: ${{ secrets.PROJECT_TOKEN || github.token }}
           script: |
-            const token = process.env.PROJECT_TOKEN;
             const orgName = process.env.ORG_NAME;
             const projectNumber = parseInt(process.env.PROJECT_NUM, 10);
 
@@ -150,10 +155,6 @@ jobs:
 
             const targetNodeId = target.node_id;
             console.log(`Target: ${isIssue ? 'Issue' : 'PR'} #${target.number} (Node ID: ${targetNodeId})`);
-
-            // Initialize GraphQL client with auth token if available, fallback to context octokit
-            const { Octokit } = require('@octokit/core');
-            const octokit = token ? new Octokit({ auth: token }) : github;
 
             try {
               // 1. Fetch Org Project v2 ID
@@ -180,7 +181,7 @@ jobs:
                 }
               `;
 
-              const projectRes = await octokit.graphql(projectQuery, {
+              const projectRes = await github.graphql(projectQuery, {
                 org: orgName,
                 number: projectNumber
               });
@@ -204,7 +205,7 @@ jobs:
                 }
               `;
 
-              const addRes = await octokit.graphql(addItemMutation, {
+              const addRes = await github.graphql(addItemMutation, {
                 projectId: project.id,
                 contentId: targetNodeId
               });
@@ -253,7 +254,7 @@ jobs:
                     }
                   `;
 
-                  await octokit.graphql(updateFieldMutation, {
+                  await github.graphql(updateFieldMutation, {
                     projectId: project.id,
                     itemId: itemId,
                     fieldId: statusField.id,
