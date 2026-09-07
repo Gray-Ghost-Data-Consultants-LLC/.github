@@ -233,6 +233,15 @@ See REPO-LIFECYCLE.md for the complete list and phased action plan.
 - Removing or renaming workflow inputs (breaking change for callers)
 - Modifying the GCP project ID default (`sylvan-flight-476922-m7`)
 - Any changes to deployment targets (regions, registries)
+- Changing `runs-on` targets, concurrency groups, or cache settings in any workflow
+
+### Runner Constraints
+- **Structured-Project001** uses self-hosted runners (`[self-hosted, sp001-ci]`) with
+  job-private venvs and no GitHub-side caches (setup-node/setup-uv cache deliberately off).
+  Its `ci-cd.yml` triggers on `push:develop` only; `deploy-gcp.yml` owns `push:main`.
+  Do not deploy the reusable CI template without coordinating with the runners/infra team.
+  Reference: `Structured-Project001/docs/operations/RUNNERS.md`, `CI_PIPELINE_NOTES.md`
+- **All other org workflows** run on `ubuntu-latest`
 
 ### Never Modify
 - Do not hardcode secrets, API keys, or credentials in any file
