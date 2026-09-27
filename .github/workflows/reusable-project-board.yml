@@ -29,6 +29,16 @@ on:
         description: "GitHub organization name owning the Project (v2)"
         type: string
         default: "Gray-Ghost-Data-Consultants-LLC"
+      project-title:
+        description: >-
+          Title of the Organization Project (v2) to sync to. This is the BOARD OF
+          RECORD and is resolved at RUN TIME; it takes precedence over
+          project-number. Board numbers are not stable across this estate's
+          history -- #5 was created on 2026-09-22 while all 30 callers still
+          passed 1 -- so never rely on the number alone. Pass "" to opt out and
+          use project-number instead.
+        type: string
+        default: "GGDC Master Engineering Board"
       project-number:
         description: "Organization Project (v2) number"
         type: number
@@ -136,6 +146,7 @@ jobs:
         env:
           ORG_NAME: ${{ inputs.org-name }}
           PROJECT_NUM: ${{ inputs.project-number }}
+          PROJECT_TITLE: ${{ inputs.project-title }}
         with:
           # The org Projects v2 API needs a PAT/App token with project scope;
           # GITHUB_TOKEN cannot see org projects. Hand it to github-script so
@@ -146,7 +157,78 @@ jobs:
           github-token: ${{ secrets.PROJECT_TOKEN || github.token }}
           script: |
             const orgName = process.env.ORG_NAME;
-            const projectNumber = parseInt(process.env.PROJECT_NUM, 10);
+            const fallbackNumber = parseInt(process.env.PROJECT_NUM, 10);
+            const wantTitle = (process.env.PROJECT_TITLE || '').trim();
+            let projectNumber = fallbackNumber;
+
+            // --- Board of record: resolve by TITLE at run time -------------------
+            // All 30 project-sync.yml callers pass `project-number: 1`, and #1 is
+            // EMPTY. The board of record is "GGDC Master Engineering Board" (#5 as
+            // of 2026-09-22) -- the only project in the org carrying hand-created
+            // custom fields. Resolving here fixes every caller at once.
+            //
+            // Raising the project-number DEFAULT would have done nothing: callers
+            // pass the value explicitly, so the default is never consulted.
+            //
+            // Uses the INJECTED `github` client, never a locally constructed one.
+            // See fe43b1e: `const octokit = ...` collided with github-script's own
+            // injected `octokit` and threw "Identifier 'octokit' has already been
+            // declared" on every run. The token reaches `github` via github-token:.
+            async function resolveByTitle(title) {
+              if (!title) return null;
+              const q = `
+                query listOrgProjects($org: String!, $cursor: String) {
+                  organization(login: $org) {
+                    projectsV2(first: 100, after: $cursor) {
+                      nodes { number title closed }
+                      pageInfo { hasNextPage endCursor }
+                    }
+                  }
+                }
+              `;
+              let cursor = null;
+              const seen = [];
+              for (let page = 0; page < 10; page++) {
+                const res = await github.graphql(q, { org: orgName, cursor });
+                const conn = res.organization && res.organization.projectsV2;
+                if (!conn) return null;
+                for (const n of conn.nodes) {
+                  seen.push(`#${n.number} ${n.title}${n.closed ? ' (closed)' : ''}`);
+                  if (!n.closed && n.title.trim().toLowerCase() === title.toLowerCase()) return n.number;
+                }
+                if (!conn.pageInfo.hasNextPage) break;
+                cursor = conn.pageInfo.endCursor;
+              }
+              console.log(`No open project titled "${title}". Org projects seen: ${seen.join(' | ') || '(none)'}`);
+              return null;
+            }
+
+            // Resolution failure must NOT fall back to the number. Callers pass 1,
+            // and #1 is empty -- a rename, a revoked token or an API blip would
+            // silently resume syncing to a dead board and report success.
+            // ~/Business/CLAUDE.md: "resolve the board at run time and sync nothing
+            // if no board matches." Skipping is the only behaviour that cannot
+            // write to the wrong board.
+            let resolveFailed = false;
+            try {
+              const resolved = await resolveByTitle(wantTitle);
+              if (resolved === null) {
+                resolveFailed = true;
+                core.warning(`Board of record "${wantTitle}" did not resolve. NOT syncing -- refusing to fall back to project-number ${fallbackNumber}, which points at an empty board. If the board was renamed, update project-title; do not re-pin the number.`);
+              } else {
+                projectNumber = resolved;
+                if (resolved !== fallbackNumber) {
+                  console.log(`Board resolved by title: "${wantTitle}" is #${resolved}. Overriding the project-number ${fallbackNumber} this caller passed.`);
+                } else {
+                  console.log(`Board resolved by title: "${wantTitle}" is #${resolved} (matches the number passed).`);
+                }
+              }
+            } catch (err) {
+              resolveFailed = true;
+              core.warning(`Board title resolution failed (${err.message}). NOT syncing -- refusing to fall back to project-number ${fallbackNumber}. A resolution error and "nothing to sync" must not look alike.`);
+            }
+            if (wantTitle && resolveFailed) return;
+            // ---------------------------------------------------------------------
 
             const isIssue = Boolean(context.payload.issue);
             const isPR = Boolean(context.payload.pull_request);
