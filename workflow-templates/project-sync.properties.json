@@ -1,0 +1,6 @@
+{
+  "name": "Project board sync",
+  "description": "Add issues and pull requests to the org board of record. Opened/closed events only, skips bots.",
+  "iconName": "octicon project",
+  "categories": ["Automation"]
+}

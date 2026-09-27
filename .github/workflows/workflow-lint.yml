@@ -1,0 +1,134 @@
+# Workflow lint: actionlint + the org workflow standard (docs/WORKFLOW-STANDARD.md).
+#
+# Runs on this repo's own workflows and templates, and is reusable. In any org
+# repo (.github/workflows/workflow-lint.yml):
+#
+#   name: Workflow lint
+#   on:
+#     pull_request:
+#       paths: ['.github/workflows/**', '.github/actionlint.yaml', '.github/workflow-standard-exceptions.txt']
+#   concurrency:
+#     group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+#     cancel-in-progress: true
+#   permissions:
+#     contents: read
+#   jobs:
+#     lint:
+#       uses: Gray-Ghost-Data-Consultants-LLC/.github/.github/workflows/workflow-lint.yml@main
+#
+# The caller's own .github/actionlint.yaml and
+# .github/workflow-standard-exceptions.txt are honoured when present.
+
+name: Workflow lint
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/**"
+      - ".github/actionlint.yaml"
+      - ".github/workflow-standard-exceptions.txt"
+      - "workflow-templates/**"
+      - "scripts/check-workflow-standard.sh"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/**"
+      - ".github/actionlint.yaml"
+      - ".github/workflow-standard-exceptions.txt"
+      - "workflow-templates/**"
+      - "scripts/check-workflow-standard.sh"
+  workflow_call:
+    inputs:
+      workflow-paths:
+        description: "Space-separated workflow files or directories to lint"
+        type: string
+        default: ".github/workflows"
+      exceptions-file:
+        description: "Waiver list for the standard check (ignored if absent)"
+        type: string
+        default: ".github/workflow-standard-exceptions.txt"
+      strict:
+        description: "Fail on standard warnings (unpinned actions, push on all branches, ...)"
+        type: boolean
+        default: false
+      run-actionlint:
+        description: "Run actionlint in addition to the standard check"
+        type: boolean
+        default: true
+      standard-ref:
+        description: "Ref of Gray-Ghost-Data-Consultants-LLC/.github to take the checker script from"
+        type: string
+        default: "main"
+
+# Called from another repo this group is prefixed so it cannot collide with the
+# caller's own group (github.workflow is the caller's name inside a called workflow).
+concurrency:
+  group: workflow-lint-${{ github.repository }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: actionlint + workflow standard
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    env:
+      ACTIONLINT_VERSION: "1.7.12"
+      ACTIONLINT_SHA256: "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8"  # pragma: allowlist secret -- release checksum
+      # In this repo, lint the templates too; callers get their own inputs.
+      WORKFLOW_PATHS: ${{ github.repository == 'Gray-Ghost-Data-Consultants-LLC/.github' && '.github/workflows workflow-templates' || inputs.workflow-paths || '.github/workflows' }}
+      EXCEPTIONS_FILE: ${{ inputs.exceptions-file || '.github/workflow-standard-exceptions.txt' }}
+      STRICT: ${{ inputs.strict && '1' || '0' }}
+      # Not `inputs.run-actionlint != false`: on push/pull_request inputs are
+      # null, and null != false is FALSE in expressions (both coerce to 0).
+      RUN_ACTIONLINT: ${{ github.repository == 'Gray-Ghost-Data-Consultants-LLC/.github' || inputs.run-actionlint }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Outside this repo the checker is not in the workspace; fetch it (public
+      # repo, no token needed). In this repo, use the PR's own copy.
+      - name: Fetch workflow-standard checker
+        if: ${{ github.repository != 'Gray-Ghost-Data-Consultants-LLC/.github' }}
+        uses: actions/checkout@v4
+        with:
+          repository: Gray-Ghost-Data-Consultants-LLC/.github
+          ref: ${{ inputs.standard-ref || 'main' }}
+          path: .org-standard
+          sparse-checkout: scripts
+          persist-credentials: false
+
+      - name: Install actionlint (checksum verified)
+        if: ${{ env.RUN_ACTIONLINT == 'true' }}
+        run: |
+          tarball="actionlint_${ACTIONLINT_VERSION}_linux_amd64.tar.gz"
+          curl -fsSL -o "$tarball" "https://github.com/rhysd/actionlint/releases/download/v${ACTIONLINT_VERSION}/${tarball}"
+          echo "${ACTIONLINT_SHA256}  ${tarball}" | sha256sum -c -
+          tar -xzf "$tarball" actionlint
+          ./actionlint -version
+
+      - name: Run actionlint
+        if: ${{ env.RUN_ACTIONLINT == 'true' }}
+        run: |
+          files=()
+          for p in $WORKFLOW_PATHS; do
+            if [ -d "$p" ]; then
+              while IFS= read -r f; do files+=("$f"); done < <(find "$p" -maxdepth 1 -type f \( -name '*.yml' -o -name '*.yaml' \) | sort)
+            else
+              files+=("$p")
+            fi
+          done
+          ./actionlint -color "${files[@]}"
+
+      - name: Check workflow standard
+        run: |
+          script=scripts/check-workflow-standard.sh
+          [ -f .org-standard/$script ] && script=.org-standard/$script
+          args=()
+          [ "$STRICT" = 1 ] && args+=(--strict)
+          [ -f "$EXCEPTIONS_FILE" ] && args+=(--exceptions "$EXCEPTIONS_FILE")
+          # shellcheck disable=SC2086 # WORKFLOW_PATHS is a space-separated list
+          bash "$script" "${args[@]}" $WORKFLOW_PATHS

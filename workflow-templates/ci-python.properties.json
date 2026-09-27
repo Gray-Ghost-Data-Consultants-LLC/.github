@@ -1,0 +1,6 @@
+{
+  "name": "Python CI (org standard)",
+  "description": "Ruff and pytest through the org reusable CI workflow, with pip or uv caching.",
+  "iconName": "octicon code",
+  "categories": ["Continuous integration"]
+}

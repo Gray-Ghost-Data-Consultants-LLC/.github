@@ -1,0 +1,35 @@
+# Node.js CI through the org reusable workflow. See docs/WORKFLOW-STANDARD.md in
+# Gray-Ghost-Data-Consultants-LLC/.github. Adjust paths-ignore to your repo.
+name: CI
+
+on:
+  push:
+    branches: [$default-branch]
+    paths-ignore: ["**.md", "docs/**"]
+  pull_request:
+    # ready_for_review runs CI once when a draft is marked ready.
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths-ignore: ["**.md", "docs/**"]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    # Draft PRs run nothing. `!= true`, not `== false`: on push there is no
+    # pull_request object and `null == false` would skip the job.
+    if: ${{ github.event.pull_request.draft != true }}
+    uses: Gray-Ghost-Data-Consultants-LLC/.github/.github/workflows/reusable-ci.yml@main
+    with:
+      node-version: "20"
+      package-manager: npm   # or pnpm
+      run-lint: true
+      run-typecheck: true
+      run-build: true
+      run-test: true
+      timeout-minutes: 20
+    secrets: inherit  # pragma: allowlist secret

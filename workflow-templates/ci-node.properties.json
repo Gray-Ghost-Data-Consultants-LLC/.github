@@ -1,0 +1,6 @@
+{
+  "name": "Node.js CI (org standard)",
+  "description": "Lint, type-check, build and test through the org reusable CI workflow. Concurrency, draft skip and caching built in.",
+  "iconName": "octicon package",
+  "categories": ["Continuous integration"]
+}

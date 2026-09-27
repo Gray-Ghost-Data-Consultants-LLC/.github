@@ -1,0 +1,17 @@
+# Waivers for scripts/check-workflow-standard.sh -- "<path> <RULE>  # reason".
+# Every line here is debt against docs/WORKFLOW-STANDARD.md. Remove the line in
+# the PR that fixes it; never add one to get a new workflow past the gate.
+
+# Deploy workflows were left untouched by the workflow-standard PR on purpose:
+# a timeout on a production deploy needs a value agreed with the service owner
+# (canary observation alone defaults to 10 minutes), and re-pinning deploy
+# actions should ship on its own so a rollback is unambiguous.
+.github/workflows/reusable-deploy-gcp.yml timeout
+.github/workflows/reusable-deploy-gcp.yml pin
+.github/workflows/reusable-deploy-vercel.yml timeout
+.github/workflows/reusable-deploy-vercel.yml permissions
+.github/workflows/reusable-deploy-vercel.yml pin
+
+# pip-audit installs whatever manifest the caller has; setup-python's pip cache
+# fails the job when no requirements*.txt / pyproject.toml exists.
+.github/workflows/reusable-security.yml cache

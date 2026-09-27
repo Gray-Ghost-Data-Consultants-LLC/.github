@@ -1,0 +1,32 @@
+# Adds issues and pull requests to the org's board of record and keeps their
+# Status in step. See docs/WORKFLOW-STANDARD.md in Gray-Ghost-Data-Consultants-LLC/.github.
+#
+# Only the events the board needs: opened and closed, plus a PR leaving draft.
+# Do not add labeled, assigned, review_requested or synchronize -- each is a
+# billed run that changes nothing on the board.
+name: Sync to Project Board
+
+on:
+  issues:
+    types: [opened, closed]
+  pull_request:
+    types: [opened, closed, ready_for_review]
+
+concurrency:
+  group: project-sync-${{ github.event.issue.number || github.event.pull_request.number }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  sync-project:
+    # Bot-triggered runs get no secrets and cannot reach the board.
+    if: ${{ !endsWith(github.actor, '[bot]') }}
+    uses: Gray-Ghost-Data-Consultants-LLC/.github/.github/workflows/reusable-project-board.yml@main
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    secrets:
+      PROJECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN || secrets.GITHUB_TOKEN }}
