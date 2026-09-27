@@ -186,6 +186,35 @@ pull requests from forks. Use it only for jobs that act on pull request
 - Never interpolate pull request titles, bodies or branch names into `run:`.
   Pass them through `env:` and quote them.
 
+## Secret-scan baselines
+
+`reusable-security.yml` accepts `gitleaks-baseline`: a gitleaks **JSON** report
+of findings that should no longer fail the scan. New findings still fail. A
+baseline hides real history, so the following conditions apply.
+
+- **Every finding in the baseline has been triaged by a person.** Each one is a
+  confirmed false positive or a real secret.
+- **Every real secret has been rotated and the old value revoked** before its
+  finding enters the baseline. Rewriting history does not count as remediation.
+  A baseline is never a substitute for rotation.
+- **The baseline file is added in its own pull request with a human reviewer.**
+  The PR description lists each finding (rule, file, commit) and its triage
+  outcome.
+- **In repositories under HIPAA, COPPA or FERPA obligations, compliance sign-off**
+  is also required before that pull request merges.
+- **Never generate a baseline just to make a red scan green.** A repository with
+  untriaged findings keeps `run-gitleaks-cli` failing, or leaves it off, until a
+  person has done the triage.
+
+Generate the file with the same pinned gitleaks version the workflow uses:
+
+```
+gitleaks git --redact --report-format json --report-path .gitleaks-baseline.json .
+```
+
+Then review every entry before committing it. `--redact` keeps secret values
+out of the file.
+
 ## Runners
 
 GitHub-hosted `ubuntu-latest` is the default for every job.
@@ -212,7 +241,7 @@ with these labels:
 |---|---|
 | Node.js lint / type-check / build / test | `workflow-templates/ci-node.yml` → `reusable-ci.yml` |
 | Python ruff + pytest | `workflow-templates/ci-python.yml` → `reusable-ci.yml` |
-| Secret scan, dependency audit, Trivy, SBOM, licences | `workflow-templates/security.yml` → `reusable-security.yml` |
+| Secret scan, dependency audit, Trivy, SBOM, licences (npm / pnpm / yarn, pip / uv, any subdirectory) | `workflow-templates/security.yml` → `reusable-security.yml` |
 | Org project board sync | `workflow-templates/project-sync.yml` → `reusable-project-board.yml` |
 | Workflow lint | `.github/workflows/workflow-lint.yml` (callable) |
 

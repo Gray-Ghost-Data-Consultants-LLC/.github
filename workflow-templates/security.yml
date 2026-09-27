@@ -33,8 +33,13 @@ jobs:
     with:
       run-gitleaks-cli: true      # free gitleaks CLI; honours .gitleaks.toml
       run-secret-scan: false      # licensed gitleaks-action; enable if GITLEAKS_LICENSE is set
-      run-dependency-audit: true  # npm projects
+      run-dependency-audit: true  # Node projects
+      package-manager: npm        # npm | pnpm | yarn
+      working-directory: "."      # directory holding package.json
       run-pip-audit: false        # set true for Python projects
+      python-installer: pip       # pip | uv (uv audits uv.lock directly)
+      python-working-directory: "."
+      # gitleaks-baseline: .gitleaks-baseline.json  # only per docs/WORKFLOW-STANDARD.md
       run-sbom: true
       run-license-check: true
       run-trivy-fs: true
