@@ -3,6 +3,8 @@
 #   jobs:
 #     ci:
 #       uses: Gray-Ghost-Data-Consultants-LLC/.github/.github/workflows/reusable-ci.yml@main
+#       permissions:
+#         contents: read   # the only scope any job here needs
 #       with:
 #         node-version: '20'
 #         turbo-filter: '@myorg/service'

@@ -3,6 +3,10 @@
 #   jobs:
 #     security:
 #       uses: Gray-Ghost-Data-Consultants-LLC/.github/.github/workflows/reusable-security.yml@main
+#       permissions:            # grant these; jobs here can only narrow them
+#         contents: read
+#         pull-requests: read    # secret-scan (gitleaks-action)
+#         security-events: write # SARIF upload (dependency-audit, trivy-fs)
 #       with:
 #         node-version: '20'
 #         run-pip-audit: true   # for Python projects

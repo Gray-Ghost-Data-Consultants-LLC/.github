@@ -23,7 +23,9 @@ jobs:
   sync-project:
     # Bot-triggered runs get no secrets and cannot reach the board.
     if: ${{ !endsWith(github.actor, '[bot]') }}
-    uses: Gray-Ghost-Data-Consultants-LLC/.github/.github/workflows/reusable-project-board.yml@main
+    # This repo calls its own copy, so a PR here runs the callee it changes.
+    # Other repos use the @main form in workflow-templates/project-sync.yml.
+    uses: ./.github/workflows/reusable-project-board.yml
     permissions:
       contents: read
       issues: write
