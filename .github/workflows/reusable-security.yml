@@ -139,11 +139,22 @@ jobs:
         with:
           fetch-depth: 0
 
+      # gitleaks-action refuses repository_dispatch outright:
+      #   ##[error]ERROR: The [repository_dispatch] event is not yet supported
+      # It is not a misconfiguration on our side and there is nothing to pass it.
+      # Skipped rather than left to fail, with an explicit notice so a skipped
+      # secret scan is visible in the log instead of merely absent.
       - name: Run Gitleaks
+        if: github.event_name != 'repository_dispatch'
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
+
+      - name: Note skipped secret scan
+        if: github.event_name == 'repository_dispatch'
+        run: |
+          echo "::notice::Gitleaks skipped: gitleaks-action does not support the repository_dispatch event. Secret scanning still runs on push, schedule and workflow_dispatch for this repository."
 
       - name: Upload Gitleaks report
         if: always()
