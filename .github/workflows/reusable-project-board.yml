@@ -72,6 +72,16 @@ on:
           actor and still syncs.
         type: boolean
         default: false
+      sync-all-actions:
+        description: >-
+          Run for every event action the caller forwards. Default false: only
+          issues opened/closed/reopened, pull requests opened/closed/reopened/
+          ready_for_review, and workflow_dispatch start the job. Anything else
+          (labeled, assigned, review_requested, synchronize, ...) is skipped at
+          the job level, so it never starts a runner. Set true only if the board
+          must follow status:* labels as they are added.
+        type: boolean
+        default: false
     secrets:
       PROJECT_TOKEN:
         description: "Personal Access Token or GitHub App token with project:write permissions"
@@ -86,7 +96,25 @@ permissions:
 jobs:
   sync-to-project:
     name: Sync Issue / PR to Org Project
-    if: ${{ inputs.include-bots || !endsWith(github.actor, '[bot]') }}
+    # Two gates, both evaluated before any runner starts, so a skipped event
+    # bills nothing and the caller's run ends skipped, not failed:
+    #  1. actor: bots are skipped unless include-bots.
+    #  2. action: only the actions the board needs, unless sync-all-actions.
+    #     This makes untrimmed callers (labeled, assigned, review_requested...)
+    #     free no-ops without editing all 30 of them. `reopened` is kept: the
+    #     step below maps it back to In Progress, and it is rare.
+    if: >-
+      ${{
+        (inputs.include-bots || !endsWith(github.actor, '[bot]'))
+        && (
+          inputs.sync-all-actions
+          || github.event_name == 'workflow_dispatch'
+          || (github.event_name == 'issues'
+              && contains(fromJSON('["opened","closed","reopened"]'), github.event.action))
+          || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target')
+              && contains(fromJSON('["opened","closed","reopened","ready_for_review"]'), github.event.action))
+        )
+      }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
