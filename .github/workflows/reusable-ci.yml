@@ -3,10 +3,15 @@
 #   jobs:
 #     ci:
 #       uses: Gray-Ghost-Data-Consultants-LLC/.github/.github/workflows/reusable-ci.yml@main
+#       permissions:
+#         contents: read   # the only scope any job here needs
 #       with:
 #         node-version: '20'
 #         turbo-filter: '@myorg/service'
 #       secrets: inherit
+#
+# For pnpm projects add:
+#         package-manager: pnpm
 #
 # For Python projects:
 #   jobs:
@@ -17,9 +22,24 @@
 #         run-typecheck: false
 #         run-build: false
 #         python-version: '3.12'
+#         python-cache: pip       # or python-installer: uv (caches via setup-uv)
 #         run-python-lint: true
 #         run-python-test: true
 #       secrets: inherit
+#
+# Concurrency: set it in the CALLER, not here. Inside a called workflow
+# github.workflow is the caller's name, so a group defined here with the usual
+# `${{ github.workflow }}-${{ github.ref }}` would collide with the caller's and
+# GitHub cancels the run as a deadlock. In the caller:
+#
+#   concurrency:
+#     group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+#     cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+#
+# Draft pull requests: pass skip-draft-prs: true and add ready_for_review to the
+# caller's pull_request types, so CI runs once when the PR leaves draft.
+#
+# See docs/WORKFLOW-STANDARD.md and workflow-templates/ci-node.yml / ci-python.yml.
 
 name: Reusable CI
 
@@ -30,6 +50,14 @@ on:
         description: "Node.js version to use"
         type: string
         default: "20"
+      package-manager:
+        description: "Node package manager: npm or pnpm (pnpm reads packageManager from package.json unless pnpm-version is set)"
+        type: string
+        default: "npm"
+      pnpm-version:
+        description: "pnpm version for pnpm/action-setup (empty = read packageManager from package.json)"
+        type: string
+        default: ""
       turbo-filter:
         description: "Turborepo filter expression (e.g. '@grayghostdata/portal'). Omit for all."
         type: string
@@ -58,6 +86,25 @@ on:
         description: "Python version (empty = skip Python steps)"
         type: string
         default: ""
+      python-installer:
+        description: "Python installer: pip or uv"
+        type: string
+        default: "pip"
+      python-cache:
+        description: >-
+          setup-python cache type when python-installer is pip ("pip" or "").
+          Empty by default because setup-python fails when no requirements*.txt
+          or pyproject.toml exists to key the cache on.
+        type: string
+        default: ""
+      python-working-directory:
+        description: "Working directory for the Python jobs"
+        type: string
+        default: "."
+      python-test-command:
+        description: "Command the Python test job runs"
+        type: string
+        default: "python -m pytest tests/ -v --tb=short"
       run-python-lint:
         description: "Run Python lint with ruff"
         type: boolean
@@ -70,103 +117,147 @@ on:
         description: "Comma-separated services to start (e.g. postgres,redis)"
         type: string
         default: ""
+      skip-draft-prs:
+        description: "Skip every job while the triggering pull request is a draft"
+        type: boolean
+        default: false
+      timeout-minutes:
+        description: "timeout-minutes applied to every job"
+        type: number
+        default: 30
     secrets:
       CLERK_PUBLISHABLE_KEY:
         required: false
       NPM_TOKEN:
         required: false
 
+permissions:
+  contents: read
+
 jobs:
   lint:
     name: Lint
-    if: ${{ inputs.run-lint }}
+    if: ${{ inputs.run-lint && (!inputs.skip-draft-prs || github.event.pull_request.draft != true) }}
     runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
     defaults:
       run:
         working-directory: ${{ inputs.working-directory }}
+    env:
+      PM: ${{ inputs.package-manager }}
+      TURBO_FILTER: ${{ inputs.turbo-filter }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        if: ${{ inputs.package-manager == 'pnpm' }}
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: ${{ inputs.pnpm-version }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: ${{ inputs.node-version }}
-          cache: "npm"
+          cache: ${{ inputs.package-manager }}
 
       - name: Install dependencies
-        run: npm ci --legacy-peer-deps
+        run: |
+          if [ "$PM" = pnpm ]; then pnpm install --frozen-lockfile; else npm ci --legacy-peer-deps; fi
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Lint
         run: |
-          FILTER="${{ inputs.turbo-filter }}"
-          if [ -n "$FILTER" ]; then
-            npx turbo run lint --filter="$FILTER"
+          if [ "$PM" = pnpm ]; then EXEC="pnpm exec"; else EXEC="npx"; fi
+          if [ -n "$TURBO_FILTER" ]; then
+            $EXEC turbo run lint --filter="$TURBO_FILTER"
           else
-            npm run lint
+            "$PM" run lint
           fi
 
   type-check:
     name: Type Check
-    if: ${{ inputs.run-typecheck }}
+    if: ${{ inputs.run-typecheck && (!inputs.skip-draft-prs || github.event.pull_request.draft != true) }}
     runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
     defaults:
       run:
         working-directory: ${{ inputs.working-directory }}
+    env:
+      PM: ${{ inputs.package-manager }}
+      TURBO_FILTER: ${{ inputs.turbo-filter }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        if: ${{ inputs.package-manager == 'pnpm' }}
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: ${{ inputs.pnpm-version }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: ${{ inputs.node-version }}
-          cache: "npm"
+          cache: ${{ inputs.package-manager }}
 
       - name: Install dependencies
-        run: npm ci --legacy-peer-deps
+        run: |
+          if [ "$PM" = pnpm ]; then pnpm install --frozen-lockfile; else npm ci --legacy-peer-deps; fi
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Type check
         run: |
-          FILTER="${{ inputs.turbo-filter }}"
-          if [ -n "$FILTER" ]; then
-            npx turbo run type-check --filter="$FILTER"
+          if [ "$PM" = pnpm ]; then EXEC="pnpm exec"; else EXEC="npx"; fi
+          if [ -n "$TURBO_FILTER" ]; then
+            $EXEC turbo run type-check --filter="$TURBO_FILTER"
           else
-            npx tsc --noEmit
+            $EXEC tsc --noEmit
           fi
 
   build:
     name: Build
     # Run even if lint/typecheck were skipped (skipped != failed)
-    if: ${{ inputs.run-build && !failure() }}
+    if: ${{ inputs.run-build && !failure() && (!inputs.skip-draft-prs || github.event.pull_request.draft != true) }}
     needs: [lint, type-check]
     runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
     defaults:
       run:
         working-directory: ${{ inputs.working-directory }}
+    env:
+      PM: ${{ inputs.package-manager }}
+      TURBO_FILTER: ${{ inputs.turbo-filter }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        if: ${{ inputs.package-manager == 'pnpm' }}
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: ${{ inputs.pnpm-version }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: ${{ inputs.node-version }}
-          cache: "npm"
+          cache: ${{ inputs.package-manager }}
 
       - name: Install dependencies
-        run: npm ci --legacy-peer-deps
+        run: |
+          if [ "$PM" = pnpm ]; then pnpm install --frozen-lockfile; else npm ci --legacy-peer-deps; fi
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Build
         run: |
-          FILTER="${{ inputs.turbo-filter }}"
-          if [ -n "$FILTER" ]; then
-            npx turbo run build --filter="$FILTER"
+          if [ "$PM" = pnpm ]; then EXEC="pnpm exec"; else EXEC="npx"; fi
+          if [ -n "$TURBO_FILTER" ]; then
+            $EXEC turbo run build --filter="$TURBO_FILTER"
           else
-            npm run build
+            "$PM" run build
           fi
         env:
           CI: "true"
@@ -174,38 +265,55 @@ jobs:
 
   test:
     name: Unit Tests
-    if: ${{ inputs.run-test }}
+    if: ${{ inputs.run-test && (!inputs.skip-draft-prs || github.event.pull_request.draft != true) }}
     runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
     defaults:
       run:
         working-directory: ${{ inputs.working-directory }}
+    env:
+      PM: ${{ inputs.package-manager }}
+      TURBO_FILTER: ${{ inputs.turbo-filter }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        if: ${{ inputs.package-manager == 'pnpm' }}
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: ${{ inputs.pnpm-version }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: ${{ inputs.node-version }}
-          cache: "npm"
+          cache: ${{ inputs.package-manager }}
 
       - name: Install dependencies
-        run: npm ci --legacy-peer-deps
+        run: |
+          if [ "$PM" = pnpm ]; then pnpm install --frozen-lockfile; else npm ci --legacy-peer-deps; fi
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Run tests
         run: |
-          FILTER="${{ inputs.turbo-filter }}"
-          if [ -n "$FILTER" ]; then
-            npx turbo run test --filter="$FILTER"
+          if [ "$PM" = pnpm ]; then EXEC="pnpm exec"; else EXEC="npx"; fi
+          if [ -n "$TURBO_FILTER" ]; then
+            $EXEC turbo run test --filter="$TURBO_FILTER"
           else
-            npm test -- --ci --coverage
+            "$PM" test -- --ci --coverage
           fi
 
   python-lint:
     name: Python Lint
-    if: ${{ inputs.run-python-lint }}
+    if: ${{ inputs.run-python-lint && (!inputs.skip-draft-prs || github.event.pull_request.draft != true) }}
     runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.python-working-directory }}
+    env:
+      PY_INSTALLER: ${{ inputs.python-installer }}
     steps:
       - uses: actions/checkout@v4
 
@@ -213,12 +321,20 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ inputs.python-version }}
+          cache: ${{ inputs.python-installer == 'pip' && inputs.python-cache || '' }}
+
+      - name: Setup uv
+        if: ${{ inputs.python-installer == 'uv' }}
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
 
       - name: Install dependencies
         run: |
-          pip install ruff
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          if [ -f pyproject.toml ]; then pip install -e ".[dev]" 2>/dev/null || pip install -e .; fi
+          if [ "$PY_INSTALLER" = uv ]; then pip_install() { uv pip install --system "$@"; }; else pip_install() { pip install "$@"; }; fi
+          pip_install ruff
+          if [ -f requirements.txt ]; then pip_install -r requirements.txt; fi
+          if [ -f pyproject.toml ]; then pip_install -e ".[dev]" 2>/dev/null || pip_install -e .; fi
 
       - name: Ruff check
         run: ruff check .
@@ -228,14 +344,20 @@ jobs:
 
   python-test:
     name: Python Tests
-    if: ${{ inputs.run-python-test }}
+    if: ${{ inputs.run-python-test && (!inputs.skip-draft-prs || github.event.pull_request.draft != true) }}
     runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    defaults:
+      run:
+        working-directory: ${{ inputs.python-working-directory }}
+    env:
+      PY_INSTALLER: ${{ inputs.python-installer }}
     services:
       postgres:
         image: postgres:16-alpine
         env:
           POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: testpass
+          POSTGRES_PASSWORD: testpass  # pragma: allowlist secret -- throwaway CI service container
           POSTGRES_DB: test_db
         ports:
           - 5432:5432
@@ -260,15 +382,24 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ inputs.python-version }}
+          cache: ${{ inputs.python-installer == 'pip' && inputs.python-cache || '' }}
+
+      - name: Setup uv
+        if: ${{ inputs.python-installer == 'uv' }}
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
 
       - name: Install dependencies
         run: |
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          if [ -f pyproject.toml ]; then pip install -e ".[dev]" 2>/dev/null || pip install -e .; fi
+          if [ "$PY_INSTALLER" = uv ]; then pip_install() { uv pip install --system "$@"; }; else pip_install() { pip install "$@"; }; fi
+          if [ -f requirements.txt ]; then pip_install -r requirements.txt; fi
+          if [ -f pyproject.toml ]; then pip_install -e ".[dev]" 2>/dev/null || pip_install -e .; fi
 
       - name: Run tests
         env:
-          DATABASE_URL: postgresql://postgres:testpass@localhost:5432/test_db
+          DATABASE_URL: postgresql://postgres:testpass@localhost:5432/test_db  # pragma: allowlist secret
           REDIS_URL: redis://localhost:6379
           ENVIRONMENT: test
-        run: python -m pytest tests/ -v --tb=short
+          PYTHON_TEST_COMMAND: ${{ inputs.python-test-command }}
+        run: eval "$PYTHON_TEST_COMMAND"

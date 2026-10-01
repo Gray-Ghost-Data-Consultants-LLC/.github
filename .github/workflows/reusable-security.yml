@@ -3,10 +3,22 @@
 #   jobs:
 #     security:
 #       uses: Gray-Ghost-Data-Consultants-LLC/.github/.github/workflows/reusable-security.yml@main
+#       permissions:            # grant these; jobs here can only narrow them
+#         contents: read
+#         pull-requests: read    # secret-scan (gitleaks-action)
+#         security-events: write # SARIF upload (dependency-audit, trivy-fs)
 #       with:
 #         node-version: '20'
 #         run-pip-audit: true   # for Python projects
+#         run-gitleaks-cli: true # replaces a standalone gitleaks workflow
+#         package-manager: pnpm  # npm (default) | pnpm | yarn
+#         working-directory: web # where package.json lives (default ".")
 #       secrets: inherit
+#
+# Concurrency is handled here: a newer run on the same pull request cancels the
+# older one; push and schedule runs are never queued or cancelled. The group is
+# prefixed "reusable-security-" so it can never collide with the caller's own
+# group (inside a called workflow, github.workflow is the CALLER's name).
 
 name: Reusable Security Scan
 
@@ -53,44 +65,160 @@ on:
         description: "Semicolon-separated list of allowed SPDX license identifiers"
         type: string
         default: "MIT;Apache-2.0;BSD-2-Clause;BSD-3-Clause;ISC;0BSD;Unlicense;CC0-1.0;CC-BY-3.0;CC-BY-4.0;Python-2.0;Zlib"
+      run-gitleaks-cli:
+        description: >-
+          Run the gitleaks CLI (pinned, checksum-verified binary, no license
+          needed) over full git history. Lets a repo delete its standalone
+          gitleaks workflow. Uses gitleaks-config when that file exists.
+        type: boolean
+        default: false
+      gitleaks-config:
+        description: "Path to the gitleaks config used by run-gitleaks-cli (ignored if the file is absent)"
+        type: string
+        default: ".gitleaks.toml"
+      gitleaks-baseline:
+        description: >-
+          Path to a gitleaks JSON report of already-triaged findings; matching
+          findings are not reported. Empty = no baseline. Only allowed under
+          the conditions in docs/WORKFLOW-STANDARD.md ("Secret-scan baselines").
+        type: string
+        default: ""
+      working-directory:
+        description: "Directory holding package.json for dependency-audit, sbom and license-check"
+        type: string
+        default: "."
+      package-manager:
+        description: "Node package manager for dependency-audit, sbom and license-check: npm, pnpm or yarn (classic or 2+)"
+        type: string
+        default: "npm"
+      pnpm-version:
+        description: "pnpm version for pnpm/action-setup (empty = read packageManager from package.json)"
+        type: string
+        default: ""
+      python-working-directory:
+        description: "Directory holding requirements.txt / pyproject.toml / uv.lock for pip-audit"
+        type: string
+        default: "."
+      python-installer:
+        description: "pip-audit dependency source: pip, or uv (audits uv.lock directly when present)"
+        type: string
+        default: "pip"
+      timeout-minutes:
+        description: "timeout-minutes applied to every job"
+        type: number
+        default: 30
+      concurrency-suffix:
+        description: "Extra concurrency-group key; set only when one caller workflow invokes this workflow more than once"
+        type: string
+        default: ""
     secrets:
       GITLEAKS_LICENSE:
         required: false
       NPM_TOKEN:
         required: false
 
+concurrency:
+  group: reusable-security-${{ github.workflow }}-${{ github.event_name == 'pull_request' && github.ref || github.run_id }}${{ inputs.concurrency-suffix }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Default for any job that sets no permissions of its own. Jobs below only ever
+# narrow what the caller grants; a called workflow cannot widen it.
+permissions:
+  contents: read
+
 jobs:
   dependency-audit:
     name: Dependency Audit
     if: ${{ inputs.run-dependency-audit }}
     runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
       security-events: write
       contents: read
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    env:
+      PM: ${{ inputs.package-manager }}
     steps:
       - uses: actions/checkout@v4
+
+      # Empty outputs when working-directory is "." so setup-node keeps its
+      # default root-lockfile behaviour.
+      - name: Locate lockfile
+        id: lock
+        working-directory: .
+        env:
+          WD: ${{ inputs.working-directory }}
+        run: |
+          path=""
+          if [ "$WD" != "." ]; then
+            for f in package-lock.json npm-shrinkwrap.json pnpm-lock.yaml yarn.lock; do
+              if [ -f "$WD/$f" ]; then path="$WD/$f"; break; fi
+            done
+          fi
+          berry=false
+          if [ "$PM" = yarn ] && { [ -f "$WD/.yarnrc.yml" ] || [ -f .yarnrc.yml ]; }; then berry=true; fi
+          echo "path=$path" >> "$GITHUB_OUTPUT"
+          echo "yarn-berry=$berry" >> "$GITHUB_OUTPUT"
+
+      - name: Setup pnpm
+        if: ${{ inputs.package-manager == 'pnpm' }}
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: ${{ inputs.pnpm-version }}
+          package_json_file: ${{ inputs.working-directory }}/package.json
+
+      # Yarn classic ships on GitHub-hosted runners; Yarn 2+ comes from the
+      # packageManager field through corepack. No third-party action involved.
+      - name: Enable corepack (Yarn 2+)
+        if: ${{ steps.lock.outputs.yarn-berry == 'true' }}
+        run: corepack enable
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: ${{ inputs.node-version }}
-          cache: "npm"
+          cache: ${{ inputs.package-manager }}
+          cache-dependency-path: ${{ steps.lock.outputs.path }}
 
       - name: Install dependencies
-        run: npm ci --legacy-peer-deps
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          YARN_BERRY: ${{ steps.lock.outputs.yarn-berry }}
+        run: |
+          case "$PM" in
+            pnpm) pnpm install --frozen-lockfile ;;
+            yarn) if [ "$YARN_BERRY" = true ]; then yarn install --immutable; else yarn install --frozen-lockfile; fi ;;
+            *) npm ci --legacy-peer-deps ;;
+          esac
 
-      - name: Run npm audit
-        run: npm audit --omit=dev --audit-level=${{ inputs.audit-level }}
+      - name: Run dependency audit
+        env:
+          AUDIT_LEVEL: ${{ inputs.audit-level }}
+          YARN_BERRY: ${{ steps.lock.outputs.yarn-berry }}
+        run: |
+          case "$PM" in
+            pnpm) pnpm audit --prod --audit-level "$AUDIT_LEVEL" ;;
+            yarn) if [ "$YARN_BERRY" = true ]; then yarn npm audit --environment production --severity "$AUDIT_LEVEL"; else yarn audit --groups dependencies --level "$AUDIT_LEVEL"; fi ;;
+            *) npm audit --omit=dev --audit-level="$AUDIT_LEVEL" ;;
+          esac
         continue-on-error: true
 
+      # The report keeps the npm-audit.json name whichever manager wrote it, so
+      # artifact consumers do not change.
       - name: Generate audit report
         if: always()
+        env:
+          YARN_BERRY: ${{ steps.lock.outputs.yarn-berry }}
         run: |
-          npm audit --json > npm-audit.json || true
+          case "$PM" in
+            pnpm) pnpm audit --json > npm-audit.json || true ;;
+            yarn) if [ "$YARN_BERRY" = true ]; then yarn npm audit --json > npm-audit.json || true; else yarn audit --json > npm-audit.json || true; fi ;;
+            *) npm audit --json > npm-audit.json || true ;;
+          esac
           echo "## NPM Audit Report" > audit-summary.md
-          npm audit || true
+          "$PM" audit || true
         continue-on-error: true
 
       - name: Upload audit report
@@ -99,8 +227,8 @@ jobs:
         with:
           name: audit-report
           path: |
-            npm-audit.json
-            audit-summary.md
+            ${{ inputs.working-directory }}/npm-audit.json
+            ${{ inputs.working-directory }}/audit-summary.md
           if-no-files-found: ignore
           retention-days: 30
 
@@ -108,6 +236,14 @@ jobs:
     name: Python Dependency Audit
     if: ${{ inputs.run-pip-audit }}
     runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+    defaults:
+      run:
+        working-directory: ${{ inputs.python-working-directory }}
+    env:
+      PY_INSTALLER: ${{ inputs.python-installer }}
     steps:
       - uses: actions/checkout@v4
 
@@ -116,21 +252,42 @@ jobs:
         with:
           python-version: ${{ inputs.python-version }}
 
+      - name: Setup uv
+        if: ${{ inputs.python-installer == 'uv' }}
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          enable-cache: true
+
       - name: Install pip-audit
         run: pip install pip-audit
 
+      # uv with a uv.lock: audit the locked set without installing it.
+      # Otherwise install as before (via uv pip when python-installer is uv).
       - name: Install project dependencies
         run: |
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          if [ -f pyproject.toml ]; then pip install -e ".[dev]" 2>/dev/null || pip install -e .; fi
+          if [ "$PY_INSTALLER" = uv ] && [ -f uv.lock ]; then
+            uv export --frozen --all-extras --no-hashes --no-emit-project --no-emit-workspace \
+              --format requirements-txt -o "$RUNNER_TEMP/audit-requirements.txt"
+            exit 0
+          fi
+          if [ "$PY_INSTALLER" = uv ]; then pip_install() { uv pip install --system "$@"; }; else pip_install() { pip install "$@"; }; fi
+          if [ -f requirements.txt ]; then pip_install -r requirements.txt; fi
+          if [ -f pyproject.toml ]; then pip_install -e ".[dev]" 2>/dev/null || pip_install -e .; fi
 
       - name: Run pip-audit
-        run: pip-audit
+        run: |
+          req="$RUNNER_TEMP/audit-requirements.txt"
+          if [ -f "$req" ]; then
+            pip-audit -r "$req" --no-deps --disable-pip
+          else
+            pip-audit
+          fi
 
   secret-scan:
     name: Secret Detection
     if: ${{ inputs.run-secret-scan }}
     runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
       contents: read
       pull-requests: read
@@ -140,7 +297,7 @@ jobs:
           fetch-depth: 0
 
       - name: Run Gitleaks
-        uses: gitleaks/gitleaks-action@v2
+        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2.3.9
         env:
           GITHUB_TOKEN: ${{ github.token }}
           GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
@@ -154,10 +311,61 @@ jobs:
           if-no-files-found: ignore
           retention-days: 30
 
+  gitleaks-cli:
+    name: Secret Detection (gitleaks CLI)
+    if: ${{ inputs.run-gitleaks-cli }}
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+    permissions:
+      contents: read
+    env:
+      GITLEAKS_VERSION: "8.28.0"
+      GITLEAKS_SHA256: "a65b5253807a68ac0cafa4414031fd740aeb55f54fb7e55f386acb52e6a840eb"  # pragma: allowlist secret -- release checksum
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install gitleaks (checksum verified)
+        run: |
+          tarball="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -fsSL -o "$tarball" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/${tarball}"
+          echo "${GITLEAKS_SHA256}  ${tarball}" | sha256sum -c -
+          tar -xzf "$tarball" gitleaks
+          ./gitleaks version
+
+      - name: Run gitleaks over full history
+        env:
+          GITLEAKS_CONFIG_PATH: ${{ inputs.gitleaks-config }}
+          GITLEAKS_BASELINE: ${{ inputs.gitleaks-baseline }}
+        run: |
+          args=(git --redact --exit-code 1 --report-format sarif --report-path gitleaks-cli.sarif)
+          if [ -n "$GITLEAKS_CONFIG_PATH" ] && [ -f "$GITLEAKS_CONFIG_PATH" ]; then
+            args+=(--config "$GITLEAKS_CONFIG_PATH")
+          fi
+          if [ -n "$GITLEAKS_BASELINE" ]; then
+            if [ -f "$GITLEAKS_BASELINE" ]; then
+              args+=(--baseline-path "$GITLEAKS_BASELINE")
+            else
+              echo "::warning::gitleaks-baseline '$GITLEAKS_BASELINE' not found; scanning without a baseline"
+            fi
+          fi
+          ./gitleaks "${args[@]}" .
+
+      - name: Upload gitleaks report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gitleaks-cli-report
+          path: gitleaks-cli.sarif
+          if-no-files-found: ignore
+          retention-days: 30
+
   trivy-fs:
     name: Trivy Filesystem Scan
     if: ${{ inputs.run-trivy-fs }}
     runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
       security-events: write
       contents: read
@@ -165,7 +373,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Run Trivy FS scan
-        uses: aquasecurity/trivy-action@v0.35.0
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1 # v0.35.0
         with:
           scan-type: "fs"
           scan-ref: "."
@@ -184,31 +392,78 @@ jobs:
     name: Generate SBOM
     if: ${{ inputs.run-sbom }}
     runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
       contents: read
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    env:
+      PM: ${{ inputs.package-manager }}
     steps:
       - uses: actions/checkout@v4
+
+      # Empty outputs when working-directory is "." so setup-node keeps its
+      # default root-lockfile behaviour.
+      - name: Locate lockfile
+        id: lock
+        working-directory: .
+        env:
+          WD: ${{ inputs.working-directory }}
+        run: |
+          path=""
+          if [ "$WD" != "." ]; then
+            for f in package-lock.json npm-shrinkwrap.json pnpm-lock.yaml yarn.lock; do
+              if [ -f "$WD/$f" ]; then path="$WD/$f"; break; fi
+            done
+          fi
+          berry=false
+          if [ "$PM" = yarn ] && { [ -f "$WD/.yarnrc.yml" ] || [ -f .yarnrc.yml ]; }; then berry=true; fi
+          echo "path=$path" >> "$GITHUB_OUTPUT"
+          echo "yarn-berry=$berry" >> "$GITHUB_OUTPUT"
+
+      - name: Setup pnpm
+        if: ${{ inputs.package-manager == 'pnpm' }}
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: ${{ inputs.pnpm-version }}
+          package_json_file: ${{ inputs.working-directory }}/package.json
+
+      # Yarn classic ships on GitHub-hosted runners; Yarn 2+ comes from the
+      # packageManager field through corepack. No third-party action involved.
+      - name: Enable corepack (Yarn 2+)
+        if: ${{ steps.lock.outputs.yarn-berry == 'true' }}
+        run: corepack enable
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: ${{ inputs.node-version }}
-          cache: "npm"
+          cache: ${{ inputs.package-manager }}
+          cache-dependency-path: ${{ steps.lock.outputs.path }}
 
       - name: Install dependencies
-        run: npm ci --legacy-peer-deps
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          YARN_BERRY: ${{ steps.lock.outputs.yarn-berry }}
+        run: |
+          case "$PM" in
+            pnpm) pnpm install --frozen-lockfile ;;
+            yarn) if [ "$YARN_BERRY" = true ]; then yarn install --immutable; else yarn install --frozen-lockfile; fi ;;
+            *) npm ci --legacy-peer-deps ;;
+          esac
 
       - name: Generate SBOM (CycloneDX)
-        uses: anchore/sbom-action@v0
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
+          path: ${{ inputs.working-directory }}
           format: cyclonedx-json
           output-file: sbom.cyclonedx.json
 
       - name: Generate SBOM (SPDX)
-        uses: anchore/sbom-action@v0
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
         with:
+          path: ${{ inputs.working-directory }}
           format: spdx-json
           output-file: sbom.spdx.json
 
@@ -225,28 +480,75 @@ jobs:
     name: License Compliance
     if: ${{ inputs.run-license-check }}
     runs-on: ubuntu-latest
+    timeout-minutes: ${{ inputs.timeout-minutes }}
     permissions:
       contents: read
+    defaults:
+      run:
+        working-directory: ${{ inputs.working-directory }}
+    env:
+      PM: ${{ inputs.package-manager }}
     steps:
       - uses: actions/checkout@v4
+
+      # Empty outputs when working-directory is "." so setup-node keeps its
+      # default root-lockfile behaviour.
+      - name: Locate lockfile
+        id: lock
+        working-directory: .
+        env:
+          WD: ${{ inputs.working-directory }}
+        run: |
+          path=""
+          if [ "$WD" != "." ]; then
+            for f in package-lock.json npm-shrinkwrap.json pnpm-lock.yaml yarn.lock; do
+              if [ -f "$WD/$f" ]; then path="$WD/$f"; break; fi
+            done
+          fi
+          berry=false
+          if [ "$PM" = yarn ] && { [ -f "$WD/.yarnrc.yml" ] || [ -f .yarnrc.yml ]; }; then berry=true; fi
+          echo "path=$path" >> "$GITHUB_OUTPUT"
+          echo "yarn-berry=$berry" >> "$GITHUB_OUTPUT"
+
+      - name: Setup pnpm
+        if: ${{ inputs.package-manager == 'pnpm' }}
+        uses: pnpm/action-setup@b906affcce14559ad1aafd4ab0e942779e9f58b1 # v4.3.0
+        with:
+          version: ${{ inputs.pnpm-version }}
+          package_json_file: ${{ inputs.working-directory }}/package.json
+
+      # Yarn classic ships on GitHub-hosted runners; Yarn 2+ comes from the
+      # packageManager field through corepack. No third-party action involved.
+      - name: Enable corepack (Yarn 2+)
+        if: ${{ steps.lock.outputs.yarn-berry == 'true' }}
+        run: corepack enable
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: ${{ inputs.node-version }}
-          cache: "npm"
+          cache: ${{ inputs.package-manager }}
+          cache-dependency-path: ${{ steps.lock.outputs.path }}
 
       - name: Install dependencies
-        run: npm ci --legacy-peer-deps
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          YARN_BERRY: ${{ steps.lock.outputs.yarn-berry }}
+        run: |
+          case "$PM" in
+            pnpm) pnpm install --frozen-lockfile ;;
+            yarn) if [ "$YARN_BERRY" = true ]; then yarn install --immutable; else yarn install --frozen-lockfile; fi ;;
+            *) npm ci --legacy-peer-deps ;;
+          esac
 
       - name: Check licenses
+        env:
+          ALLOWED_LICENSES: ${{ inputs.allowed-licenses }}
         run: |
           npm install -g license-checker
           license-checker \
             --production \
-            --onlyAllow "${{ inputs.allowed-licenses }}" \
+            --onlyAllow "$ALLOWED_LICENSES" \
             --json > licenses.json
         continue-on-error: true
 
@@ -254,6 +556,6 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: license-reports
-          path: licenses.json
+          path: ${{ inputs.working-directory }}/licenses.json
           if-no-files-found: ignore
           retention-days: 90

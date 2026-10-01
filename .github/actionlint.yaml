@@ -1,0 +1,13 @@
+# actionlint configuration. Scoped ignores only -- each one names the file and
+# the exact shellcheck rule, with the reason.
+paths:
+  .github/workflows/reusable-deploy-gcp.yml:
+    ignore:
+      # CANARY_FLAGS / SECRET_FLAG hold zero or more CLI flags and are split on
+      # purpose; quoting them would pass one malformed argument to gcloud.
+      - 'SC2086:'
+      # Pre-existing in the canary loop and step-summary block; harmless, left
+      # for the PR that gives the deploy job a timeout (see
+      # .github/workflow-standard-exceptions.txt).
+      - 'SC2046:'
+      - 'SC2129:'

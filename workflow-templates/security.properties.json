@@ -1,0 +1,6 @@
+{
+  "name": "Security scans (org standard)",
+  "description": "Gitleaks, dependency audit, Trivy, SBOM and license check through the org reusable security workflow.",
+  "iconName": "octicon shield-check",
+  "categories": ["Continuous integration"]
+}

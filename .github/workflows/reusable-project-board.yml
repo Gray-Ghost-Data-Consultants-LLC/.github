@@ -2,23 +2,39 @@
 # Synchronizes issues, pull requests, and status lifecycle across the
 # Gray-Ghost-Data-Consultants-LLC Organization Project Board.
 #
-# Usage in any repository (.github/workflows/project-sync.yml):
+# Usage in any repository (.github/workflows/project-sync.yml). The canonical
+# caller is workflow-templates/project-sync.yml -- copy that file, do not
+# hand-roll one. Its trimmed trigger list matters: every extra event type
+# (labeled, assigned, review_requested, ...) is a billed run that does nothing
+# the board needs.
 #
 #   name: Sync to Project Board
 #   on:
 #     issues:
-#       types: [opened, labeled, assigned, closed, reopened]
+#       types: [opened, closed]
 #     pull_request:
-#       types: [opened, labeled, ready_for_review, review_requested, closed, reopened]
+#       types: [opened, closed, ready_for_review]
+#
+#   concurrency:
+#     group: project-sync-${{ github.event.issue.number || github.event.pull_request.number }}
+#     cancel-in-progress: false
+#
+#   permissions:
+#     contents: read
 #
 #   jobs:
 #     sync-project:
+#       if: ${{ !endsWith(github.actor, '[bot]') }}
 #       uses: Gray-Ghost-Data-Consultants-LLC/.github/.github/workflows/reusable-project-board.yml@main
-#       with:
-#         org-name: 'Gray-Ghost-Data-Consultants-LLC'
-#         project-number: 1
+#       permissions:
+#         contents: read
+#         issues: write
+#         pull-requests: write
 #       secrets:
 #         PROJECT_TOKEN: ${{ secrets.ORG_PROJECT_TOKEN || secrets.GITHUB_TOKEN }}
+#
+# The caller job cannot carry timeout-minutes (not allowed on a `uses:` job);
+# the timeout lives on the job below.
 
 name: Reusable Project Board Sync
 
@@ -47,21 +63,64 @@ on:
         description: "Automatically apply universal taxonomy labels if missing"
         type: boolean
         default: true
+      include-bots:
+        description: >-
+          Sync items whose triggering actor is a bot (login ending in "[bot]").
+          Default false: bot events are skipped. Bot-triggered pull_request runs
+          get no secrets, so they could never reach the org board anyway -- they
+          only burned a runner. A human closing or merging a bot PR is a human
+          actor and still syncs.
+        type: boolean
+        default: false
+      sync-all-actions:
+        description: >-
+          Run for every event action the caller forwards. Default false: only
+          issues opened/closed/reopened, pull requests opened/closed/reopened/
+          ready_for_review, and workflow_dispatch start the job. Anything else
+          (labeled, assigned, review_requested, synchronize, ...) is skipped at
+          the job level, so it never starts a runner. Set true only if the board
+          must follow status:* labels as they are added.
+        type: boolean
+        default: false
     secrets:
       PROJECT_TOKEN:
         description: "Personal Access Token or GitHub App token with project:write permissions"
         required: false
 
+# Least privilege. repository-projects was dropped: it governs classic repo
+# projects only. The org Projects v2 board is reached with PROJECT_TOKEN, never
+# with GITHUB_TOKEN. Dropping a scope is safe for callers that still grant it.
 permissions:
-  issues: write
-  pull-requests: write
   contents: read
-  repository-projects: write
 
 jobs:
   sync-to-project:
     name: Sync Issue / PR to Org Project
+    # Two gates, both evaluated before any runner starts, so a skipped event
+    # bills nothing and the caller's run ends skipped, not failed:
+    #  1. actor: bots are skipped unless include-bots.
+    #  2. action: only the actions the board needs, unless sync-all-actions.
+    #     This makes untrimmed callers (labeled, assigned, review_requested...)
+    #     free no-ops without editing all 30 of them. `reopened` is kept: the
+    #     step below maps it back to In Progress, and it is rare.
+    if: >-
+      ${{
+        (inputs.include-bots || !endsWith(github.actor, '[bot]'))
+        && (
+          inputs.sync-all-actions
+          || github.event_name == 'workflow_dispatch'
+          || (github.event_name == 'issues'
+              && contains(fromJSON('["opened","closed","reopened"]'), github.event.action))
+          || ((github.event_name == 'pull_request' || github.event_name == 'pull_request_target')
+              && contains(fromJSON('["opened","closed","reopened","ready_for_review"]'), github.event.action))
+        )
+      }}
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write         # auto-label on issues
+      pull-requests: write  # auto-label on pull requests
 
     steps:
       - name: Auto-Label Universal Taxonomy

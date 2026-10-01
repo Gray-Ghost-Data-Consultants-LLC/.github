@@ -1,0 +1,47 @@
+# Security scans through the org reusable workflow. See docs/WORKFLOW-STANDARD.md
+# in Gray-Ghost-Data-Consultants-LLC/.github. Replaces per-repo security.yml and
+# standalone gitleaks workflows.
+name: Security
+
+on:
+  push:
+    branches: [$default-branch]
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  schedule:
+    - cron: "17 6 * * 1"   # weekly full pass, Monday 06:17 UTC
+
+# The reusable workflow also sets its own (differently prefixed) group, so the
+# two cannot deadlock.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  security:
+    if: ${{ github.event.pull_request.draft != true }}
+    uses: Gray-Ghost-Data-Consultants-LLC/.github/.github/workflows/reusable-security.yml@main
+    # The reusable jobs can only narrow these; trivy-fs and dependency-audit
+    # upload SARIF, which needs security-events: write.
+    permissions:
+      contents: read
+      pull-requests: read
+      security-events: write
+    with:
+      run-gitleaks-cli: true      # free gitleaks CLI; honours .gitleaks.toml
+      run-secret-scan: false      # licensed gitleaks-action; enable if GITLEAKS_LICENSE is set
+      run-dependency-audit: true  # Node projects
+      package-manager: npm        # npm | pnpm | yarn
+      working-directory: "."      # directory holding package.json
+      run-pip-audit: false        # set true for Python projects
+      python-installer: pip       # pip | uv (uv audits uv.lock directly)
+      python-working-directory: "."
+      # gitleaks-baseline: .gitleaks-baseline.json  # only per docs/WORKFLOW-STANDARD.md
+      run-sbom: true
+      run-license-check: true
+      run-trivy-fs: true
+      timeout-minutes: 20
+    secrets: inherit  # pragma: allowlist secret
