@@ -305,7 +305,7 @@ jobs:
                     projectV2(number: $number) {
                       id
                       title
-                      fields(first: 20) {
+                      fields(first: 50) {
                         nodes {
                           ... on ProjectV2SingleSelectField {
                             id
@@ -372,6 +372,7 @@ jobs:
                   else if (labels.includes('status:review-needed')) targetStatus = 'Review Needed';
                   else if (labels.includes('status:in-progress')) targetStatus = 'In Progress';
                   else if (labels.includes('status:needs-triage')) targetStatus = 'Needs Triage';
+                  else if (labels.includes('status:todo')) targetStatus = 'Todo';
                   else if (labels.includes('status:done')) targetStatus = 'Done';
                 }
 
@@ -404,6 +405,31 @@ jobs:
 
                   console.log(`✓ Project Board Status set to "${matchedOption.name}"`);
                 }
+              }
+
+              // 4. Label -> field mapping for Priority, Area and Work Type.
+              // Labels are the source of truth for these (as for Status), so a field set
+              // here always agrees with the item's labels. Client, Start/Target date,
+              // Phase, Estimate and Merlin ID have no label and are owned by
+              // merlin-board-sync.py; this step never touches them.
+              const labelNames = (target.labels || []).map(l => (typeof l === 'string' ? l : l.name));
+              const LABEL_FIELDS = [
+                { field: 'priority', prefix: 'priority:', map: { critical: 'Critical', high: 'High', medium: 'Medium', low: 'Low' } },
+                { field: 'area', prefix: 'area:', map: { backend: 'Backend', frontend: 'Frontend', database: 'Database', devops: 'DevOps', compliance: 'Compliance' } },
+                { field: 'work type', prefix: 'type:', map: { bug: 'Bug', feature: 'Feature', security: 'Security', performance: 'Performance', infra: 'Infrastructure', docs: 'Docs', refactor: 'Refactor', test: 'Test', chore: 'Chore' } },
+              ];
+              for (const lf of LABEL_FIELDS) {
+                const fieldNode = project.fields.nodes.find(f => f.name && f.name.toLowerCase() === lf.field && f.options);
+                const label = labelNames.find(n => n && n.startsWith(lf.prefix) && lf.map[n.slice(lf.prefix.length)]);
+                if (!fieldNode || !label) continue;
+                const want = lf.map[label.slice(lf.prefix.length)];
+                const opt = fieldNode.options.find(o => o.name === want);
+                if (!opt) { console.log(`ℹ ${fieldNode.name} has no option "${want}"; left unset`); continue; }
+                await github.graphql(`
+                  mutation setOpt($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+                    updateProjectV2ItemFieldValue(input: { projectId: $projectId, itemId: $itemId, fieldId: $fieldId, value: { singleSelectOptionId: $optionId } }) { projectV2Item { id } }
+                  }`, { projectId: project.id, itemId, fieldId: fieldNode.id, optionId: opt.id });
+                console.log(`✓ ${fieldNode.name} set to "${opt.name}" from ${label}`);
               }
             } catch (err) {
               console.log(`ℹ Project board GraphQL operation notice: ${err.message}`);
