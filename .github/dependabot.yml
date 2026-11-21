@@ -1,0 +1,30 @@
+# Dependabot configuration.
+# Alerts are computed on the default branch, so no entry sets target-branch:
+# version and security updates both open against the default branch.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "09:00"
+      timezone: "America/New_York"
+    open-pull-requests-limit: 3
+    labels:
+      - "dependencies"
+      - "type:security"
+    commit-message:
+      prefix: "chore(deps)"
+    groups:
+      actions-minor-patch:
+        applies-to: version-updates
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"
+      actions-security:
+        applies-to: security-updates
+        patterns:
+          - "*"
